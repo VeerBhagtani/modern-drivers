@@ -120,6 +120,8 @@ window.DRIVERS_API = (function () {
     importRestaurants: function (csv) { return request(D + '/restaurants/import', { method: 'POST', body: { csv: csv } }); },
     awaitingLocation: function () { return request(D + '/restaurants/awaiting-location'); },
     retryUnconfirmed: function () { return request(D + '/restaurants/retry-unconfirmed', { method: 'POST', body: {} }); },
+    locationsLock: function () { return request(D + '/locations-lock'); },
+    setLocationsLock: function (locked) { return request(D + '/locations-lock', { method: 'PUT', body: { locked: locked } }); },
     setHold: function (id, on, reason) {
       return request(D + '/restaurants/' + id + '/hold', { method: 'POST', body: { on: on, reason: reason } });
     },

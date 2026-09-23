@@ -5,125 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Modern Drivers</title>
 <link rel="icon" href="mark.png">
-<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=00e2b85">
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css?v=26c2466">
 <script src="vendor/maplibre/maplibre-gl-csp.js" defer></script>
-<style>
-  /* Modern Drivers has its own look: navy ground, white surfaces, one accent.
-     It is not the ordering app's admin panel and should not be mistaken for it
-     at a glance — different product, different people, different screen. */
-  :root{
-    --navy:#1B2A6B; --navy-deep:#101B49; --navy-tint:#e8ebf7; --accent:#D7262F;
-    --bg:#f4f5f9; --surface:#fff; --line:#e0e3ec; --ink:#141824; --ink-2:#5a6478;
-    --ok:#1a7a4c; --ok-tint:#e4f4eb; --warn:#8a5f14; --warn-tint:#fdf3df;
-    --bad:#b3261e; --bad-tint:#fceceb;
-    --r:14px; --shadow:0 1px 2px rgba(20,24,36,.06),0 4px 16px rgba(20,24,36,.05);
-  }
-  *{box-sizing:border-box;}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-       background:var(--bg);color:var(--ink);margin:0;min-height:100vh;
-       -webkit-font-smoothing:antialiased;}
-  a{color:var(--navy);}
-
-  /* ── sign in ──────────────────────────────────────────────────────── */
-  .signin-bg{min-height:100vh;display:flex;align-items:center;justify-content:center;
-             padding:24px;background:linear-gradient(160deg,var(--navy) 0%,var(--navy-deep) 100%);}
-  .signin{background:var(--surface);border-radius:20px;padding:36px 32px;max-width:400px;width:100%;
-          box-shadow:0 20px 60px rgba(0,0,0,.28);}
-  .signin img{width:200px;max-width:70%;height:auto;object-fit:contain;display:block;margin:0 auto 20px;}
-  .signin h1{font-size:1.5rem;margin:0 0 4px;text-align:center;letter-spacing:-.01em;}
-  .signin .sub{text-align:center;color:var(--ink-2);font-size:.9rem;margin:0 0 26px;}
-
-  /* ── shell ────────────────────────────────────────────────────────── */
-  .topbar{background:var(--navy);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;
-          flex-wrap:wrap;position:sticky;top:0;z-index:6;}
-  .topbar img{width:32px;height:32px;object-fit:contain;}
-  .topbar h1{font-size:1.05rem;margin:0;font-weight:700;letter-spacing:-.01em;}
-  .topbar .sp{flex:1;}
-  .topbar .meta{font-size:.8rem;color:#b9c2e4;}
-  .topbar button{background:rgba(255,255,255,.14);color:#fff;border:none;border-radius:8px;
-                 padding:7px 13px;font-size:.85rem;cursor:pointer;font-family:inherit;font-weight:600;}
-  .topbar button:hover{background:rgba(255,255,255,.22);}
-  .tabs{display:flex;gap:4px;overflow-x:auto;background:var(--navy);padding:0 14px 10px;position:sticky;top:58px;z-index:6;}
-  .tabs button{background:transparent;color:#b9c2e4;border:none;border-bottom:3px solid transparent;
-               padding:8px 13px;font-size:.88rem;cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600;}
-  .tabs button:hover{color:#fff;}
-  .tabs button.on{color:#fff;border-bottom-color:#fff;}
-  .wrap{max-width:1320px;margin:0 auto;padding:20px 16px 60px;}
-
-  /* ── pieces ───────────────────────────────────────────────────────── */
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;
-        margin-bottom:16px;box-shadow:var(--shadow);}
-  .card h2{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2);margin:0 0 14px;font-weight:700;}
-  .grid{display:grid;gap:12px;}
-  .metrics{grid-template-columns:repeat(auto-fit,minmax(148px,1fr));}
-  .metric{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;box-shadow:var(--shadow);}
-  .metric .v{font-size:1.7rem;font-weight:800;line-height:1.05;letter-spacing:-.02em;}
-  .metric .l{font-size:.76rem;color:var(--ink-2);margin-top:6px;line-height:1.35;}
-  .metric.warn .v{color:var(--warn);} .metric.bad .v{color:var(--bad);} .metric.ok .v{color:var(--ok);}
-  .split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px;align-items:start;}
-  @media(max-width:960px){.split{grid-template-columns:1fr;}}
-
-  table{width:100%;border-collapse:collapse;}
-  th,td{text-align:left;padding:10px 9px;border-bottom:1px solid var(--line);font-size:.87rem;vertical-align:top;}
-  th{color:var(--ink-2);font-weight:700;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;}
-  tbody tr:hover{background:var(--navy-tint);}
-  tbody tr.click{cursor:pointer;}
-
-  .pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;white-space:nowrap;}
-  .pill.live,.pill.active,.pill.ok,.pill.HIGH,.pill.MATCHED{background:var(--ok-tint);color:var(--ok);}
-  .pill.stale,.pill.degraded,.pill.warn,.pill.MEDIUM,.pill.POSSIBLE,.pill.NEEDS_REVIEW{background:var(--warn-tint);color:var(--warn);}
-  .pill.unavailable,.pill.idle{background:var(--bg);color:var(--ink-2);}
-  .pill.no_signal,.pill.bad,.pill.LOW,.pill.UNKNOWN,.pill.UNMATCHED_VISIT,.pill.UNMATCHED_DELIVERY{background:var(--bad-tint);color:var(--bad);}
-
-  #map,#replayMap{width:100%;height:540px;border-radius:var(--r);border:1px solid var(--line);background:#e3e6ef;}
-  #replayMap{height:400px;}
-  .marker{width:16px;height:16px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.45);cursor:pointer;}
-  .marker.live{background:var(--ok);} .marker.stale{background:var(--warn);} .marker.unavailable{background:#9aa3bd;}
-
-  input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;
-                        font-size:.94rem;font-family:inherit;background:#fff;color:var(--ink);}
-  input:focus,select:focus,textarea:focus{outline:2px solid var(--navy);outline-offset:-1px;border-color:var(--navy);}
-  label{display:block;font-size:.75rem;font-weight:700;color:var(--ink-2);margin:0 0 6px;text-transform:uppercase;letter-spacing:.04em;}
-  .field{margin-bottom:14px;}
-  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
-
-  button{cursor:pointer;font-family:inherit;font-size:.92rem;font-weight:600;border:none;border-radius:10px;padding:11px 16px;}
-  .btn-primary{background:var(--navy);color:#fff;width:100%;}
-  .btn-primary:hover{background:var(--navy-deep);}
-  .btn-danger{background:var(--bad);color:#fff;}
-  .btn-outline{background:#fff;color:var(--navy);border:1.5px solid var(--navy);}
-  .btn-sm{font-size:.8rem;padding:7px 11px;width:auto;}
-  button:disabled{opacity:.55;cursor:default;}
-
-  .err{color:var(--bad);font-size:.86rem;font-weight:600;margin:10px 0;}
-  .ok-msg{color:var(--ok);font-size:.86rem;font-weight:600;margin:10px 0;}
-  .muted{color:var(--ink-2);font-size:.86rem;line-height:1.55;}
-  .tiny{font-size:.75rem;color:var(--ink-2);line-height:1.45;}
-  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;}
-  .bar>div{min-width:132px;}
-  .modal-bg{position:fixed;inset:0;background:rgba(16,27,73,.5);display:none;align-items:center;justify-content:center;padding:16px;z-index:20;}
-  .modal-bg.on{display:flex;}
-  .modal{background:#fff;border-radius:16px;max-width:680px;width:100%;max-height:88vh;overflow:auto;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.3);}
-  .evidence{background:var(--bg);border-radius:10px;padding:12px;margin:10px 0;font-size:.82rem;line-height:1.65;}
-  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:var(--ink-2);margin-top:10px;}
-  .legend i{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;}
-  .banner{background:var(--warn-tint);border:1px solid #efdcb2;color:var(--warn);border-radius:10px;
-          padding:11px 14px;font-size:.86rem;margin-bottom:14px;font-weight:600;}
-  .banner.info{background:var(--navy-tint);border-color:#ccd4ee;color:var(--navy);}
-  .link-sm{background:none;border:none;color:var(--navy);font-size:.75rem;font-weight:700;
-           text-decoration:underline;padding:4px 0;}
-  /* A folded-away panel. Everything that is not the main job of a screen goes
-     behind one of these: the office should see the one thing to do, not the
-     twelve things the software is capable of. */
-  details.card>summary.disclose{cursor:pointer;font-size:.88rem;font-weight:700;color:var(--ink);
-                                list-style:none;display:flex;align-items:center;gap:8px;}
-  details.card>summary.disclose::-webkit-details-marker{display:none;}
-  details.card>summary.disclose::before{content:'\25B8';color:var(--ink-2);font-size:.85rem;}
-  details.card[open]>summary.disclose::before{content:'\25BE';}
-  details.card>summary.disclose:hover{color:var(--navy);}
-  [hidden]{display:none!important;}
-</style>
+<link rel="stylesheet" href="theme.css?v=26c2466">
 </head>
 <body>
 
@@ -166,11 +50,11 @@
 
 <div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
 
-<script src="config.js?v=00e2b85"></script>
-<script src="xlsx.js?v=00e2b85"></script>
-<script src="api.js?v=00e2b85"></script>
-<script src="map.js?v=00e2b85"></script>
-<script src="views.js?v=00e2b85"></script>
-<script src="app.js?v=00e2b85"></script>
+<script src="config.js?v=26c2466"></script>
+<script src="xlsx.js?v=26c2466"></script>
+<script src="api.js?v=26c2466"></script>
+<script src="map.js?v=26c2466"></script>
+<script src="views.js?v=26c2466"></script>
+<script src="app.js?v=26c2466"></script>
 </body>
 </html>

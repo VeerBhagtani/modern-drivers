@@ -148,6 +148,13 @@ window.DRIVERS_VIEWS = (function () {
         + '  </div>'
         + '  <div class="card">'
         + '    <h2>Live map</h2>'
+        // Three thousand identical red dots is not something you can find a
+        // restaurant in by looking. Typing its name flies the map to it and
+        // opens it.
+        + '    <div style="position:relative;margin-bottom:10px">'
+        + '      <input id="mapFind" placeholder="Find a restaurant on the map" autocomplete="off">'
+        + '      <div id="mapFindHits" class="findhits" hidden></div>'
+        + '    </div>'
         + '    <div id="map"></div>'
         + '    <div class="legend">'
         + '      <span><i style="background:#1a7a4c"></i>Live</span>'
@@ -187,8 +194,59 @@ window.DRIVERS_VIEWS = (function () {
           var coords = d.drivers.filter(function (x) { return x.lastLocation; }).map(function (x) { return [x.lastLocation.lng, x.lastLocation.lat]; });
           MAPS.fitTo(state.map, coords);
         });
+        bindMapFind(restaurants);
       }
       scheduleRefresh();
+    });
+  }
+
+  /* Finding one restaurant among three thousand identical dots.
+   *
+   * Searches the restaurants already loaded for the map, so it is instant and
+   * costs nothing. Picking one flies the map there and opens its card, which
+   * is the same card the pin itself opens.
+   */
+  function bindMapFind(restaurants) {
+    var input = document.getElementById('mapFind');
+    var hits = document.getElementById('mapFindHits');
+    if (!input || !hits) return;
+
+    function close() { hits.hidden = true; hits.innerHTML = ''; }
+
+    input.addEventListener('input', function () {
+      var q = input.value.trim().toLowerCase();
+      if (q.length < 2) { close(); return; }
+      var found = restaurants.filter(function (p) {
+        return hasPin(p) && ((p.name || '') + ' ' + (p.area || '')).toLowerCase().indexOf(q) !== -1;
+      }).slice(0, 8);
+
+      hits.hidden = false;
+      hits.innerHTML = found.length
+        ? found.map(function (p) {
+          return '<button type="button" data-find="' + esc(p.id) + '">'
+            + '<b>' + esc(p.name) + '</b>'
+            + (p.area ? '<span>' + esc(p.area) + '</span>' : '')
+            + (p.supplyHold === true ? '<span style="color:var(--bad)">supply on hold</span>' : '')
+            + '</button>';
+        }).join('')
+        : '<div class="tiny" style="padding:10px 12px">Nothing on the map matches. '
+          + 'A restaurant with no location yet will not be here.</div>';
+
+      hits.querySelectorAll('[data-find]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var p = restaurants.find(function (x) { return x.id === b.getAttribute('data-find'); });
+          if (!p) return;
+          close();
+          input.value = p.name;
+          if (state.map) state.map.flyTo({ center: [p.lng, p.lat], zoom: 16 });
+          restaurantModal(p);
+        });
+      });
+    });
+
+    input.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+    document.addEventListener('click', function (e) {
+      if (e.target !== input && !hits.contains(e.target)) close();
     });
   }
 
@@ -675,7 +733,9 @@ window.DRIVERS_VIEWS = (function () {
     return Promise.all([
       API.places('restaurants'), API.places('facilities'), API.awaitingLocation(),
       API.integrationSecrets().catch(function () { return {}; }),
+      API.locationsLock().catch(function () { return { locked: false }; }),
     ]).then(function (r) {
+      var lock = r[4] || { locked: false };
       var restaurants = r[0];
       var facilities = r[1];
       var await_ = r[2] || {};
@@ -692,9 +752,10 @@ window.DRIVERS_VIEWS = (function () {
       // which is a description of the machinery, not a description of the job.
       // One button now runs the whole sequence; everything else is folded away
       // until it is actually needed.
-      set(summaryCard(restaurants.length, onMap, counts, secrets)
+      set(lockCard(lock)
+        + summaryCard(restaurants.length, onMap, counts, secrets, lock)
         + heldCard(held)
-        + needsYouCard(awaiting, counts)
+        + (lock.locked ? '' : needsYouCard(awaiting, counts))
         // With nothing imported yet, the upload panel IS the screen, so it
         // opens itself rather than making somebody hunt for it.
         + '<details class="card"' + (restaurants.length ? '' : ' open')
@@ -732,7 +793,8 @@ window.DRIVERS_VIEWS = (function () {
       bindPlaceForms();
       bindHoldButtons();
       bindOneButton(counts, secrets);
-      bindAwaiting();
+      bindLock();
+      bindAwaiting(awaiting);
       bindGeocodingKey();
       on('#btnExport', 'click', function () {
         API.download('/admin/restaurants/export.csv', {}, 'restaurants.csv').catch(function (e) { alert(e.message); });
@@ -785,9 +847,54 @@ window.DRIVERS_VIEWS = (function () {
    * behind this, because that sequence was never a decision anybody wanted to
    * make. It was just the order the machinery had to run in.
    */
-  function summaryCard(total, onMap, counts, secrets) {
+  /* The latch, and the state of it, at the very top.
+   *
+   * Every expensive mistake on this screen is one click and three thousand
+   * rows wide — a stale spreadsheet re-imported, a lookup re-run over pins
+   * somebody spent an afternoon placing. Once the list is right, this keeps it
+   * right, and it is enforced by the server rather than by a greyed-out
+   * button, because a greyed-out button is a suggestion.
+   */
+  function lockCard(lock) {
+    if (lock.locked) {
+      return '<div class="card" style="border-color:#c9d3ef;background:var(--navy-tint)">'
+        + '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+        + '<div style="flex:1;min-width:240px"><b>The restaurant list is locked.</b>'
+        + '<div class="tiny" style="margin-top:3px">Uploading, the lookup and the bulk placing are all refused by the server. '
+        + 'Putting supply on hold and moving a single pin still work — those are the daily jobs.'
+        + (lock.lockedBy ? '<br>Locked by ' + esc(lock.lockedBy) : '')
+        + (lock.lockedAt ? ' on ' + dateTime(lock.lockedAt) : '')
+        + '</div></div>'
+        + '<button class="btn-outline" id="btnUnlock" style="width:auto">Unlock</button>'
+        + '</div><p id="lockMsg" class="tiny" style="margin:8px 0 0"></p></div>';
+    }
+    return '';
+  }
+
+  function bindLock() {
+    function set_(locked, btnId, msgId) {
+      var btn = document.getElementById(btnId);
+      var msg = document.getElementById(msgId);
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        if (locked && !confirm('Lock the restaurant list?\n\n'
+          + 'Uploading and the location lookup will be refused until somebody unlocks it. '
+          + 'Supply holds and moving single pins keep working.')) return;
+        btn.disabled = true;
+        if (msg) msg.textContent = 'Saving…';
+        API.setLocationsLock(locked).then(render).catch(function (e) {
+          btn.disabled = false;
+          if (msg) msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+        });
+      });
+    }
+    set_(true, 'btnLock', 'goMsg');
+    set_(false, 'btnUnlock', 'lockMsg');
+  }
+
+  function summaryCard(total, onMap, counts, secrets, lock) {
     var saved = secrets && secrets.geocoding === 'configured';
-    var todo = counts.total || 0;
+    var todo = (lock && lock.locked) ? 0 : (counts.total || 0);
 
     if (!total) {
       return '<div class="card"><h2>Restaurants</h2>'
@@ -810,7 +917,12 @@ window.DRIVERS_VIEWS = (function () {
             + 'the business at its own building, or the right road from your address. '
             + 'Anything that only matches a whole suburb is left for you, because a suburb-wide pin would make '
             + 'a driver\'s private errand look like a delivery.</p>'
-          : '<p class="ok-msg" style="margin:0">Every restaurant has a location. Nothing to do here.</p>')
+          : (lock && lock.locked
+            ? '<p class="muted" style="margin:0">The list is locked, so nothing here can run. Unlock it above to make changes.</p>'
+            : '<p class="ok-msg" style="margin:0">Every restaurant has a location.</p>'
+              + '<p style="margin:10px 0 0"><button class="btn-outline" id="btnLock" style="width:auto">Lock the list</button></p>'
+              + '<p class="tiny" style="margin:6px 0 0">Stops anyone re-importing an old spreadsheet or re-running the lookup over '
+              + 'pins you have placed. Supply holds and single-pin corrections keep working.</p>'))
 
       + '<p id="goMsg" class="tiny" style="margin:10px 0 0"></p>'
       + '</div>';
@@ -1060,11 +1172,38 @@ window.DRIVERS_VIEWS = (function () {
 
     return '<div class="card" style="border-color:#efdcb2">'
       + '<h2>' + counts.unconfirmed + ' need you to place them</h2>'
-      + '<div class="banner">The lookup could not identify these, so they are <b>not</b> on the map and are <b>not</b> '
-      + 'counted in any driver\'s kilometres. Most only matched a whole suburb — placing one of those automatically '
-      + 'would make a driver\'s private errand through that suburb look like a delivery.</div>'
-      + '<p class="muted">Click <b>Pick on map</b> and tap the building. '
-      + 'Or add a street address for them in your spreadsheet and upload it again — that usually fixes them in bulk.</p>'
+      + '<div class="banner">These are <b>not</b> on the map, so they are invisible to everything: no geofence, '
+      + 'no visit detected, no kilometres, and drivers cannot pick them. The lookup could only find the middle of '
+      + 'their area, which is not where the shop is.</div>'
+
+      // The fast way, and the one that actually gets to zero.
+      + '<p style="margin:14px 0 4px"><button class="btn-primary" id="btnPlaceAll" style="width:auto;font-size:1.05rem;padding:14px 26px">'
+      + 'Place them one by one</button></p>'
+      + '<p class="tiny" style="margin:0 0 14px">Opens the map on the first one and moves straight to the next when you save. '
+      + 'Drag the pin onto the building, or search for a landmark to jump there. '
+      + 'About ten seconds each — ' + counts.unconfirmed + ' of them is roughly '
+      + Math.max(1, Math.round(counts.unconfirmed / 6)) + ' minutes.</p>'
+
+      // The override, behind a deliberate tick. Offered because the office
+      // asked for it and their reasoning is sound — a rough pin beats no pin —
+      // but not something to hit by accident, so the button does not exist
+      // until the box that explains it is ticked.
+      + (counts.areaOnly
+        ? '<div style="border-top:1px solid var(--line);padding-top:12px">'
+          + '<label style="display:flex;gap:9px;align-items:flex-start;text-transform:none;letter-spacing:0;font-weight:400;color:var(--ink)">'
+          + '<input type="checkbox" id="chkArea" style="width:18px;height:18px;flex:none;margin-top:2px">'
+          + '<span class="tiny">I understand that putting the <b>' + counts.areaOnly + '</b> suburb-only matches on the map '
+          + 'puts each pin at the middle of its area, not at the shop. A driver at the real restaurant may register no visit, '
+          + 'and a driver passing the middle of that suburb may register one that never happened. '
+          + 'I would rather have a rough pin than none, and will correct them later.</span></label>'
+          + '<p style="margin:10px 0 0"><button class="btn-outline" id="btnAcceptArea" style="width:auto" disabled>'
+          + 'Put the ' + counts.areaOnly + ' suburb matches on the map anyway</button>'
+          + '<span id="areaMsg" class="tiny"></span></p>'
+          + '</div>'
+        : '')
+
+      + '<p class="muted" style="margin-top:14px">A better fix, if you have the data: add street addresses for these in your '
+      + 'spreadsheet and upload it again. An address usually finds the building on the first try.</p>'
 
       + '<div style="overflow-x:auto;max-height:420px;overflow-y:auto;margin-top:10px"><table><thead><tr>'
       + '<th>Your name for it</th><th>Area</th><th>What was found</th><th>Precision</th><th>Place it</th>'
@@ -1104,26 +1243,66 @@ window.DRIVERS_VIEWS = (function () {
    * this opens the map at the geocoder's best guess and asks for a click.
    */
   function pickOnMap(id, name, lat, lng) {
-    var start = (isFinite(lat) && isFinite(lng) && lat) ? [lng, lat] : null;
-    modal('<h3 style="margin:0 0 4px">Where is ' + esc(name) + '?</h3>'
-      + '<p class="tiny" style="margin:0 0 10px">Click the building on the map. '
-      + (start
-        ? 'The pin starts at the geocoder\'s best guess — drag or click to correct it.'
-        : 'Nothing was found for this one, so start by finding the area.')
+    placeQueue([{ id: id, name: name, candidate: { lat: lat, lng: lng } }], 0);
+  }
+
+  /* Placing the stragglers, one after another, without leaving the map.
+   *
+   * Ninety restaurants nobody can identify automatically is not ninety
+   * decisions — it is one job, done ninety times. Closing a dialog, finding
+   * the next row in a table and opening it again turns twenty minutes of work
+   * into an afternoon nobody ever finishes, and a restaurant with no pin is
+   * invisible to the whole system. So the map stays open and moves on: place,
+   * save, next.
+   *
+   * @param queue [{ id, name, area, candidate: {lat,lng}, geocode }]
+   * @param i     where in the queue we are
+   */
+  function placeQueue(queue, i) {
+    var p = queue[i];
+    if (!p) { closeModal(); render(); return; }
+
+    var c = p.candidate || {};
+    var g = p.geocode || {};
+    var start = (typeof c.lat === 'number' && isFinite(c.lat) && typeof c.lng === 'number' && isFinite(c.lng))
+      ? [c.lng, c.lat] : null;
+    var many = queue.length > 1;
+
+    modal((many ? '<p class="tiny" style="margin:0 0 2px">' + (i + 1) + ' of ' + queue.length + '</p>' : '')
+      + '<h3 style="margin:0 0 2px">' + esc(p.name) + '</h3>'
+      + '<p class="tiny" style="margin:0 0 10px">'
+      + (p.area ? esc(p.area) + ' · ' : '')
+      + (g.formattedAddress ? 'lookup found: ' + esc(g.formattedAddress) : 'nothing useful was found for this one')
       + '</p>'
-      + '<div id="pickMap" style="width:100%;height:420px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
-      + '<p id="pickMsg" class="tiny" style="margin:10px 0 12px">No point chosen yet.</p>'
-      + '<button class="btn-primary" id="pickSave" style="width:auto" disabled>Save this location</button> '
-      + '<button class="btn-outline" id="pickCancel" style="width:auto">Cancel</button>');
+      + '<p class="tiny" style="margin:0 0 8px">'
+      + (start
+        ? 'The pin starts where the lookup guessed — usually the middle of the area. <b>Drag it onto the building.</b>'
+        : 'Search below, or zoom to the area and click the building.')
+      + '</p>'
+      + '<div style="display:flex;gap:8px;margin-bottom:8px">'
+      + '<input id="pickFind" placeholder="Type an area or landmark to jump there" style="flex:1">'
+      + '<button class="btn-outline btn-sm" id="pickFindGo">Find</button>'
+      + '</div>'
+      + '<div id="pickMap" style="width:100%;height:400px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
+      + '<p id="pickMsg" class="tiny" style="margin:8px 0 10px">No point chosen yet.</p>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="btn-primary" id="pickSave" style="width:auto" disabled>'
+      + (many && i < queue.length - 1 ? 'Save and next' : 'Save') + '</button>'
+      + (many ? '<button class="btn-outline" id="pickSkip" style="width:auto">Skip</button>' : '')
+      + '<button class="btn-outline" id="pickCancel" style="width:auto">' + (many ? 'Stop' : 'Cancel') + '</button>'
+      + '</div>');
 
     var root = document.getElementById('modal');
-    var chosen = start ? { lat: lat, lng: lng } : null;
+    var chosen = start ? { lat: c.lat, lng: c.lng } : null;
     var saveBtn = document.getElementById('pickSave');
     var msg = document.getElementById('pickMsg');
+    var moved = false;
 
     function show() {
       msg.innerHTML = chosen
-        ? 'Chosen: <b>' + chosen.lat.toFixed(5) + ', ' + chosen.lng.toFixed(5) + '</b>'
+        ? (moved || !start
+          ? '<span class="ok-msg">Pin set: ' + chosen.lat.toFixed(5) + ', ' + chosen.lng.toFixed(5) + '</span>'
+          : 'Still on the lookup\'s guess — drag it onto the building before saving.')
         : 'No point chosen yet.';
       saveBtn.disabled = !chosen;
     }
@@ -1132,26 +1311,51 @@ window.DRIVERS_VIEWS = (function () {
     // The modal has only just been written into the page; MapLibre needs the
     // container to have a size before it measures itself.
     setTimeout(function () {
-      var m = MAPS.create('pickMap', { center: start || undefined, zoom: start ? 16 : 11 });
+      var m = MAPS.create('pickMap', { center: start || undefined, zoom: start ? 15 : 12 });
       if (!m) { msg.innerHTML = '<span class="err">The map could not be loaded.</span>'; return; }
       var marker = null;
-      function place(lngLat) {
+      function place(lngLat, byHand) {
         chosen = { lat: lngLat.lat, lng: lngLat.lng };
+        if (byHand) moved = true;
         if (marker) marker.setLngLat(lngLat);
         else marker = new maplibregl.Marker({ color: '#D7262F', draggable: true }).setLngLat(lngLat).addTo(m);
-        marker.on('dragend', function () { place(marker.getLngLat()); });
+        marker.on('dragend', function () { place(marker.getLngLat(), true); });
         show();
       }
-      if (start) place({ lng: start[0], lat: start[1] });
-      m.on('click', function (e) { place(e.lngLat); });
+      if (start) place({ lng: start[0], lat: start[1] }, false);
+      m.on('click', function (e) { place(e.lngLat, true); });
+
+      // Jumping to an area by name. Uses the same free map tiles as everything
+      // else, so it costs nothing and needs no key.
+      function find() {
+        var q = (document.getElementById('pickFind').value || '').trim();
+        if (!q) return;
+        msg.textContent = 'Looking…';
+        MAPS.search(q).then(function (hit) {
+          if (!hit) { msg.innerHTML = '<span class="err">Nothing found for that.</span>'; return; }
+          m.flyTo({ center: [hit.lng, hit.lat], zoom: 15 });
+          show();
+        }).catch(function () { msg.innerHTML = '<span class="err">Search is unavailable just now.</span>'; });
+      }
+      on('#pickFindGo', 'click', find, root);
+      document.getElementById('pickFind').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); find(); }
+      });
     }, 60);
 
-    on('#pickCancel', 'click', closeModal, root);
+    function next() { placeQueue(queue, i + 1); }
+
+    on('#pickCancel', 'click', function () { closeModal(); render(); }, root);
+    if (many) on('#pickSkip', 'click', next, root);
     on('#pickSave', 'click', function () {
       if (!chosen) return;
       saveBtn.disabled = true;
-      API.confirmLocation(id, chosen.lat, chosen.lng)
-        .then(function () { closeModal(); render(); })
+      API.confirmLocation(p.id, chosen.lat, chosen.lng)
+        .then(function () {
+          if (i < queue.length - 1) return next();
+          closeModal();
+          return render();
+        })
         .catch(function (e) { saveBtn.disabled = false; msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
     }, root);
   }
@@ -1173,7 +1377,46 @@ window.DRIVERS_VIEWS = (function () {
    * not identify. The lookup, the retry and the bulk accepts all used to be
    * buttons here; they are one button now, so this binds only the per-row
    * actions. */
-  function bindAwaiting() {
+  function bindAwaiting(awaiting) {
+    // The queue: every row still waiting, in the order the server sent them,
+    // which puts the ones a person can decide quickly first.
+    on('#btnPlaceAll', 'click', function () {
+      var queue = (awaiting || []).filter(function (p) { return p.locationStatus !== 'pending'; });
+      if (!queue.length) { render(); return; }
+      placeQueue(queue, 0);
+    });
+
+    // The override arms its own button. Ticking the box is the decision; the
+    // button is just where it happens.
+    var chk = document.getElementById('chkArea');
+    if (chk) {
+      chk.addEventListener('change', function () {
+        document.getElementById('btnAcceptArea').disabled = !chk.checked;
+      });
+    }
+    on('#btnAcceptArea', 'click', function () {
+      var btn = document.getElementById('btnAcceptArea');
+      var msg = document.getElementById('areaMsg');
+      var total = 0;
+      btn.disabled = true;
+      function round() {
+        msg.innerHTML = ' Placing… <b>' + total + '</b>';
+        API.acceptCandidates('area', 1000).then(function (out) {
+          total += out.accepted;
+          if (out.remaining > 0 && out.accepted > 0) return round();
+          msg.innerHTML = ' <span class="ok-msg"><b>' + total + '</b> placed at their area centre. '
+            + 'Find them later under Restaurants → filter "placed under a different name" is not this one; '
+            + 'they are marked in the audit log.</span>';
+          setTimeout(render, 1600);
+          return null;
+        }).catch(function (e) {
+          btn.disabled = false;
+          msg.innerHTML = ' <span class="err">' + esc(e.message) + '</span>';
+        });
+      }
+      round();
+    });
+
     document.querySelectorAll('.confirm-cand').forEach(function (b) {
       b.addEventListener('click', function () {
         API.confirmLocation(b.getAttribute('data-id'), null, null)

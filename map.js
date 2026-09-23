@@ -236,6 +236,33 @@ window.DRIVERS_MAP = (function () {
     map.on('mouseleave', sourceId + '-sym', function () { map.getCanvas().style.cursor = ''; });
   }
 
+  /* Jump the map to a place by name.
+   *
+   * Uses Nominatim, OpenStreetMap's own free search. No key, no billing, and
+   * no relation to the Google lookup that places restaurants — this only moves
+   * the view, so a wrong answer costs nothing but a scroll. The paid lookup is
+   * for pins that become geofences; this is for finding Kothrud.
+   *
+   * Their usage policy asks for an identifying referer and no hammering, which
+   * a person typing into a box satisfies on its own.
+   */
+  function search(query) {
+    var url = 'https://nominatim.openstreetmap.org/search'
+      + '?format=json&limit=1&countrycodes=in'
+      // Bias to Pune and around, so "Camp" finds the one in Pune.
+      + '&viewbox=73.55,18.75,74.10,18.30&bounded=0'
+      + '&q=' + encodeURIComponent(query + ', Pune, Maharashtra');
+    return fetch(url, { headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (rows) {
+        if (!rows || !rows.length) return null;
+        var lat = Number(rows[0].lat);
+        var lng = Number(rows[0].lon);
+        if (!isFinite(lat) || !isFinite(lng)) return null;
+        return { lat: lat, lng: lng, label: rows[0].display_name || query };
+      });
+  }
+
   function fitTo(map, coords) {
     if (!map || !coords.length) return;
     var b = coords.reduce(function (acc, c) {
@@ -251,6 +278,7 @@ window.DRIVERS_MAP = (function () {
     drawTracks: drawTracks,
     clearLayer: clearLayer,
     drawPlaces: drawPlaces,
+    search: search,
     fitTo: fitTo,
     esc: esc,
   };

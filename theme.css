@@ -1,0 +1,283 @@
+/* Modern Drivers — the office dashboard's look.
+ *
+ * Its own identity, not the ordering app's: this is a different product, for
+ * different people, doing a different job, and it should not be mistaken for
+ * that one at a glance.
+ *
+ * The design brief, such as it is: somebody reads this screen at seven in the
+ * morning to find out whether forty drivers are where they should be. So the
+ * numbers are large and the chrome is quiet, there is one accent colour and it
+ * means "attention", and nothing decorative competes with the data. Every
+ * class name here matches what views.js already emits — this file changes how
+ * it looks and never what it is.
+ */
+
+:root{
+  /* Brand. Navy carries the product; red is reserved for things that are
+     wrong, never for emphasis. */
+  --navy:#1e2a5a; --navy-deep:#141d42; --navy-soft:#eef1fa; --navy-line:#d5ddf3;
+  --accent:#d7262f;
+
+  /* Ground and surfaces. A faintly cool off-white rather than grey — white
+     cards need something to sit on or the whole page reads as one sheet. */
+  --bg:#f5f6fa; --surface:#fff; --line:#e6e9f0; --line-soft:#eef0f5;
+  --ink:#151823; --ink-2:#5d667c; --ink-3:#8b93a7;
+
+  /* Status. Each has a tint for backgrounds and a solid for text, chosen so
+     the text passes contrast on its own tint. */
+  --ok:#0f7a4a; --ok-tint:#e6f5ec;
+  --warn:#8a5a0b; --warn-tint:#fdf3e0;
+  --bad:#b3261e; --bad-tint:#fdeceb;
+
+  --r:14px; --r-sm:9px; --r-lg:18px;
+  /* Two shadows: one that lifts a card off the page, one that makes a dialog
+     feel like it is above everything. */
+  --shadow:0 1px 2px rgba(21,24,35,.04), 0 2px 10px rgba(21,24,35,.045);
+  --shadow-lg:0 24px 64px rgba(21,24,35,.24);
+  --focus:0 0 0 3px rgba(30,42,90,.18);
+}
+
+*{box-sizing:border-box;}
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  background:var(--bg); color:var(--ink); margin:0; min-height:100vh;
+  font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  font-variant-numeric:tabular-nums;   /* so columns of numbers line up */
+}
+a{color:var(--navy); text-decoration-thickness:1px; text-underline-offset:2px;}
+
+/* ── sign in ─────────────────────────────────────────────────────────── */
+.signin-bg{
+  min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+  background:radial-gradient(1200px 600px at 50% -10%, #2c3c7a 0%, var(--navy) 45%, var(--navy-deep) 100%);
+}
+.signin{
+  background:var(--surface); border-radius:22px; padding:40px 34px; max-width:400px; width:100%;
+  box-shadow:0 30px 80px rgba(0,0,0,.32);
+}
+.signin img{width:190px;max-width:68%;height:auto;object-fit:contain;display:block;margin:0 auto 22px;}
+.signin h1{font-size:1.45rem;margin:0 0 4px;text-align:center;letter-spacing:-.02em;}
+.signin .sub{text-align:center;color:var(--ink-2);font-size:.9rem;margin:0 0 28px;}
+
+/* ── shell ───────────────────────────────────────────────────────────── */
+.topbar{
+  background:var(--navy); color:#fff; padding:13px 22px;
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  position:sticky; top:0; z-index:7;
+}
+.topbar img{width:30px;height:30px;object-fit:contain;}
+.topbar h1{font-size:1.02rem;margin:0;font-weight:650;letter-spacing:-.01em;}
+.topbar .sp{flex:1;}
+.topbar .meta{font-size:.79rem;color:#aeb8de;font-variant-numeric:tabular-nums;}
+.topbar button{
+  background:rgba(255,255,255,.12); color:#fff; border:none; border-radius:8px;
+  padding:7px 13px; font-size:.82rem; cursor:pointer; font-family:inherit; font-weight:600;
+  transition:background .12s ease;
+}
+.topbar button:hover{background:rgba(255,255,255,.2);}
+.topbar button:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(255,255,255,.35);}
+
+/* Tabs on their own white rail. Navy-on-navy made the whole top of the page
+   one heavy block, and buried which tab was actually selected. */
+.tabs{
+  display:flex; gap:2px; overflow-x:auto; background:var(--surface);
+  padding:0 14px; border-bottom:1px solid var(--line);
+  position:sticky; top:56px; z-index:7;
+  scrollbar-width:none;
+}
+.tabs::-webkit-scrollbar{display:none;}
+.tabs button{
+  background:transparent; color:var(--ink-2); border:none;
+  border-bottom:2px solid transparent; margin-bottom:-1px;
+  padding:13px 14px; font-size:.87rem; cursor:pointer; white-space:nowrap;
+  font-family:inherit; font-weight:600; transition:color .12s ease, border-color .12s ease;
+}
+.tabs button:hover{color:var(--ink);}
+.tabs button.on{color:var(--navy);border-bottom-color:var(--navy);}
+.tabs button:focus-visible{outline:none;box-shadow:var(--focus);border-radius:6px;}
+
+.wrap{max-width:1320px;margin:0 auto;padding:24px 18px 72px;}
+
+/* ── cards ───────────────────────────────────────────────────────────── */
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+  padding:22px; margin-bottom:16px; box-shadow:var(--shadow);
+}
+/* The card label. Small caps was right — it stays out of the way of the data —
+   but it was too faint to find. */
+.card h2{
+  font-size:.7rem; text-transform:uppercase; letter-spacing:.07em;
+  color:var(--ink-3); margin:0 0 16px; font-weight:700;
+}
+
+.grid{display:grid;gap:12px;}
+.metrics{grid-template-columns:repeat(auto-fit,minmax(152px,1fr));}
+.metric{
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+  padding:17px 18px; box-shadow:var(--shadow); position:relative; overflow:hidden;
+}
+/* A hairline of colour down the edge, so a bad number is findable without
+   reading every tile. */
+.metric::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent;}
+.metric.ok::before{background:var(--ok);}
+.metric.warn::before{background:#d99a2b;}
+.metric.bad::before{background:var(--bad);}
+.metric .v{font-size:1.85rem;font-weight:750;line-height:1.05;letter-spacing:-.025em;}
+.metric .l{font-size:.75rem;color:var(--ink-2);margin-top:7px;line-height:1.4;}
+.metric.warn .v{color:var(--warn);} .metric.bad .v{color:var(--bad);} .metric.ok .v{color:var(--ok);}
+
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px;align-items:start;}
+@media(max-width:960px){.split{grid-template-columns:1fr;}}
+
+/* ── tables ──────────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;}
+th,td{text-align:left;padding:11px 10px;font-size:.865rem;vertical-align:top;}
+td{border-bottom:1px solid var(--line-soft);}
+th{
+  color:var(--ink-3); font-weight:700; font-size:.68rem; text-transform:uppercase;
+  letter-spacing:.06em; white-space:nowrap; padding-bottom:9px;
+  border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--surface); z-index:1;
+}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover{background:var(--navy-soft);}
+tbody tr.click{cursor:pointer;}
+
+/* ── pills ───────────────────────────────────────────────────────────── */
+.pill{
+  display:inline-block; padding:3px 9px; border-radius:7px;
+  font-size:.7rem; font-weight:700; white-space:nowrap; letter-spacing:.01em;
+}
+.pill.live,.pill.active,.pill.ok,.pill.HIGH,.pill.MATCHED{background:var(--ok-tint);color:var(--ok);}
+.pill.stale,.pill.degraded,.pill.warn,.pill.MEDIUM,.pill.POSSIBLE,.pill.NEEDS_REVIEW{background:var(--warn-tint);color:var(--warn);}
+.pill.unavailable,.pill.idle{background:#eef0f5;color:var(--ink-2);}
+.pill.no_signal,.pill.bad,.pill.LOW,.pill.UNKNOWN,.pill.UNMATCHED_VISIT,.pill.UNMATCHED_DELIVERY{background:var(--bad-tint);color:var(--bad);}
+
+/* ── maps ────────────────────────────────────────────────────────────── */
+#map,#replayMap{width:100%;height:540px;border-radius:var(--r);border:1px solid var(--line);background:#e8eaf2;}
+#replayMap{height:400px;}
+.marker{width:15px;height:15px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.4);cursor:pointer;}
+.marker.live{background:var(--ok);} .marker.stale{background:#d99a2b;} .marker.unavailable{background:#9aa3bd;}
+
+/* ── forms ───────────────────────────────────────────────────────────── */
+input,select,textarea{
+  width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-sm);
+  font-size:.92rem; font-family:inherit; background:#fff; color:var(--ink);
+  transition:border-color .12s ease, box-shadow .12s ease;
+}
+input::placeholder{color:var(--ink-3);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navy);box-shadow:var(--focus);}
+input[type=checkbox]{width:auto;}
+label{
+  display:block; font-size:.7rem; font-weight:700; color:var(--ink-3);
+  margin:0 0 6px; text-transform:uppercase; letter-spacing:.05em;
+}
+.field{margin-bottom:14px;}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+@media(max-width:560px){.row2,.row3{grid-template-columns:1fr;}}
+
+/* ── buttons ─────────────────────────────────────────────────────────── */
+button{
+  cursor:pointer; font-family:inherit; font-size:.9rem; font-weight:600;
+  border:none; border-radius:var(--r-sm); padding:11px 16px;
+  transition:background .12s ease, box-shadow .12s ease, transform .06s ease;
+}
+button:active{transform:translateY(.5px);}
+button:focus-visible{outline:none;box-shadow:var(--focus);}
+.btn-primary{background:var(--navy);color:#fff;width:100%;}
+.btn-primary:hover{background:var(--navy-deep);}
+.btn-danger{background:var(--bad);color:#fff;}
+.btn-danger:hover{background:#98201a;}
+.btn-outline{background:#fff;color:var(--navy);border:1px solid var(--navy-line);}
+.btn-outline:hover{background:var(--navy-soft);border-color:var(--navy);}
+.btn-sm{font-size:.79rem;padding:6px 11px;width:auto;border-radius:7px;}
+button:disabled{opacity:.45;cursor:default;transform:none;}
+button:disabled:hover{background:var(--navy);}
+.btn-outline:disabled:hover{background:#fff;}
+
+/* ── text ────────────────────────────────────────────────────────────── */
+.err{color:var(--bad);font-size:.85rem;font-weight:600;margin:10px 0;}
+.ok-msg{color:var(--ok);font-size:.85rem;font-weight:600;margin:10px 0;}
+.muted{color:var(--ink-2);font-size:.855rem;line-height:1.6;}
+.tiny{font-size:.755rem;color:var(--ink-2);line-height:1.5;}
+code{
+  background:var(--navy-soft); color:var(--navy); padding:1px 5px;
+  border-radius:5px; font-size:.86em; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;}
+.bar>div{min-width:132px;}
+
+/* ── dialogs ─────────────────────────────────────────────────────────── */
+.modal-bg{
+  position:fixed; inset:0; background:rgba(16,24,58,.55); backdrop-filter:blur(2px);
+  display:none; align-items:center; justify-content:center; padding:16px; z-index:20;
+}
+.modal-bg.on{display:flex;}
+.modal{
+  background:#fff; border-radius:var(--r-lg); max-width:680px; width:100%;
+  max-height:88vh; overflow:auto; padding:24px; box-shadow:var(--shadow-lg);
+}
+.modal h3{margin:0 0 10px;font-size:1.15rem;letter-spacing:-.015em;}
+
+.evidence{background:var(--bg);border-radius:11px;padding:13px 14px;margin:12px 0;font-size:.82rem;line-height:1.7;}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.77rem;color:var(--ink-2);margin-top:12px;}
+.legend i{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:baseline;}
+
+.banner{
+  background:var(--warn-tint); border:1px solid #f0dcb4; color:var(--warn);
+  border-radius:11px; padding:12px 14px; font-size:.845rem; margin-bottom:14px;
+  font-weight:600; line-height:1.55;
+}
+.banner.info{background:var(--navy-soft);border-color:var(--navy-line);color:var(--navy);}
+
+.link-sm{
+  background:none; border:none; color:var(--navy); font-size:.755rem; font-weight:700;
+  text-decoration:underline; padding:4px 0;
+}
+.link-sm:hover{color:var(--navy-deep);background:none;}
+
+/* The type-ahead over the map's own restaurants. */
+.findhits{
+  position:absolute; top:100%; left:0; right:0; z-index:5; background:#fff;
+  border:1px solid var(--line); border-radius:11px; margin-top:5px; overflow:hidden;
+  box-shadow:0 12px 32px rgba(21,24,35,.16); max-height:300px; overflow-y:auto;
+}
+.findhits button{
+  display:block; width:100%; text-align:left; background:none; border:none;
+  border-bottom:1px solid var(--line-soft); padding:10px 13px; font-size:.86rem; border-radius:0;
+}
+.findhits button:last-child{border-bottom:none;}
+.findhits button:hover{background:var(--navy-soft);}
+.findhits button span{display:block;font-size:.72rem;color:var(--ink-2);margin-top:1px;font-weight:400;}
+
+/* A folded-away panel. Everything that is not the main job of a screen goes
+   behind one of these: the office should see the one thing to do, not the
+   twelve things the software is capable of. */
+details.card{padding:16px 22px;}
+details.card[open]{padding-bottom:22px;}
+details.card>summary.disclose{
+  cursor:pointer; font-size:.875rem; font-weight:650; color:var(--ink);
+  list-style:none; display:flex; align-items:center; gap:9px;
+}
+details.card>summary.disclose::-webkit-details-marker{display:none;}
+details.card>summary.disclose::before{
+  content:''; width:0; height:0; flex:none;
+  border-left:5px solid var(--ink-3); border-top:4px solid transparent; border-bottom:4px solid transparent;
+  transition:transform .15s ease; transform-origin:30% 50%;
+}
+details.card[open]>summary.disclose::before{transform:rotate(90deg);}
+details.card>summary.disclose:hover{color:var(--navy);}
+details.card>summary.disclose:focus-visible{outline:none;box-shadow:var(--focus);border-radius:6px;}
+
+[hidden]{display:none!important;}
+
+/* Print: the office prints reports, and a navy bar across the top of every
+   page is a waste of toner and a distraction on paper. */
+@media print{
+  .topbar,.tabs,button{display:none!important;}
+  body{background:#fff;}
+  .card{box-shadow:none;border-color:#ccc;break-inside:avoid;}
+}
