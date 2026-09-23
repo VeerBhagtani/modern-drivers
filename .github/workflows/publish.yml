@@ -1,0 +1,121 @@
+name: Publish the office dashboard
+
+# This repository exists to give the Modern Dairy office a sane address to
+# bookmark — veerbhagtani.github.io/modern-drivers — instead of one with
+# "dairy-app" in it, which is the *other* product.
+#
+# It holds no source of its own. The dashboard is built in
+# VeerBhagtani/modern-dairy-app on the `modern-drivers-standalone` branch, and
+# this workflow copies the built site across. That repository is public, so the
+# copy needs no token, no deploy key and nothing for anybody to rotate — which
+# is the whole reason it is done this way round rather than pushing from there
+# to here.
+#
+# It runs on a schedule so the site keeps itself current without anybody
+# remembering, and on demand for when somebody does not want to wait.
+
+on:
+  schedule:
+    # Every 20 minutes. GitHub delays scheduled runs under load, so treat this
+    # as "within the hour", not as a clock.
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish.yml']
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: publish-dashboard
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: VeerBhagtani/modern-dairy-app
+  SOURCE_BRANCH: modern-drivers-standalone
+  API_BASE: https://modern-drivers-795895369854.asia-south1.run.app
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the dashboard from the main project
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$SOURCE_BRANCH" \
+            "https://github.com/${SOURCE_REPO}.git" source
+          test -f source/dashboard/index.html \
+            || { echo "::error::No dashboard/index.html on ${SOURCE_BRANCH}."; exit 1; }
+          echo "SOURCE_SHA=$(git -C source rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Point it at the API
+        run: node source/scripts/set-api-base.js "$API_BASE" source/dashboard/config.js
+
+      - name: Publish, but only if something actually changed
+        run: |
+          set -euo pipefail
+          URL="https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf site
+          git clone -q --depth 1 --branch gh-pages "$URL" site 2>/dev/null \
+            || { mkdir site && git -C site init -q -b gh-pages; }
+
+          find site -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R source/dashboard/. site/
+          touch site/.nojekyll        # keep Pages from running Jekyll over it
+
+          # Stamp every local script and stylesheet with the source commit, so
+          # a browser cannot serve yesterday's JavaScript from cache. Without
+          # it a published fix stays invisible until somebody thinks to
+          # hard-refresh, which is not a thing to ask of the office.
+          sed -i -E "s#(src|href)=\"(api|app|map|views|config|xlsx)\.js\"#\\1=\"\\2.js?v=${SOURCE_SHA}\"#g" site/index.html
+          sed -i -E "s#href=\"(vendor/maplibre/maplibre-gl\.css)\"#href=\"\\1?v=${SOURCE_SHA}\"#g" site/index.html
+
+          cd site
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # This runs every twenty minutes. Committing regardless would bury
+          # the real history under thousands of empty commits.
+          if git diff --cached --quiet; then
+            echo "Already up to date with ${SOURCE_SHA}."
+          else
+            git commit -q -m "Publish the office dashboard from ${SOURCE_SHA}"
+            git push -q "$URL" gh-pages
+            echo "Published ${SOURCE_SHA}."
+          fi
+
+      # Turning Pages on for the first time is the one thing a workflow's own
+      # token may not do, so it tries, and says which switch to flip if it
+      # cannot. The site is pushed either way.
+      - name: Switch GitHub Pages on, the first time only
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "state=on" >> "$GITHUB_OUTPUT"
+          elif gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" \
+                 -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null 2>&1; then
+            echo "state=turned-on" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=needs-a-click" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Where it is
+        run: |
+          {
+            if [ "${{ steps.pages.outputs.state }}" = "needs-a-click" ]; then
+              echo "## One switch left"
+              echo
+              echo "The site is pushed to \`gh-pages\`, but GitHub will not let a workflow"
+              echo "turn Pages on for the first time. Do it once, by hand:"
+              echo
+              echo "**Settings → Pages → Source: _Deploy from a branch_ → Branch: \`gh-pages\` / \`(root)\` → Save**"
+            else
+              echo "## The office dashboard is live"
+              echo
+              echo "https://veerbhagtani.github.io/modern-drivers/"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
