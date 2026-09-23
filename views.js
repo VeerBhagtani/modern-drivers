@@ -23,6 +23,7 @@ window.DRIVERS_VIEWS = (function () {
     markers: {},
     replay: null,
     tracksMap: null,
+    restaurants: null,
     currentRide: null,
   };
 
@@ -30,6 +31,11 @@ window.DRIVERS_VIEWS = (function () {
     ['fleet', 'Live fleet'],
     ['drivers', 'Drivers'],
     ['review', 'Review'],
+    // Two tabs, because they are two jobs. Restaurants is the daily one —
+    // find a customer, stop or start their supply. Locations is the setup
+    // one — upload the spreadsheet, get everything pinned. Mixing them is
+    // what made this screen unusable the first time.
+    ['restaurants', 'Restaurants'],
     ['places', 'Locations'],
     ['orders', 'Deliveries'],
     ['reports', 'Reports'],
@@ -87,7 +93,8 @@ window.DRIVERS_VIEWS = (function () {
 
   function render() {
     var fn = ({
-      fleet: renderFleet, drivers: renderDrivers, review: renderReview, places: renderPlaces,
+      fleet: renderFleet, drivers: renderDrivers, review: renderReview,
+      restaurants: renderRestaurants, places: renderPlaces,
       orders: renderOrders, reports: renderReports, alerts: renderAlerts, settings: renderSettings,
     })[state.tab];
     set(spinner());
@@ -170,8 +177,11 @@ window.DRIVERS_VIEWS = (function () {
         state.map.once('load', function () {
           // Customers first, drivers on top: a driver must never be hidden
           // under a restaurant pin.
+          var byId = {};
+          restaurants.forEach(function (p) { byId[p.id] = p; });
           MAPS.drawPlaces(state.map, 'restaurants',
-            restaurants.filter(function (x) { return x.active !== false && hasPin(x); }), '#D7262F');
+            restaurants.filter(function (x) { return x.active !== false && hasPin(x); }), '#D7262F',
+            function (id) { if (byId[id]) restaurantModal(byId[id]); });
           MAPS.drawPlaces(state.map, 'facilities', facilities.filter(hasPin), '#1B2A6B');
           MAPS.syncMarkers({ map: state.map, markers: state.markers }, d.drivers, openDriver);
           var coords = d.drivers.filter(function (x) { return x.lastLocation; }).map(function (x) { return [x.lastLocation.lng, x.lastLocation.lat]; });
@@ -554,6 +564,112 @@ window.DRIVERS_VIEWS = (function () {
     });
   }
 
+  // ── Restaurants ────────────────────────────────────────────────────────
+  //
+  // The day-to-day customer screen: find one, see its state, stop or start its
+  // supply. Separate from Locations, which is the once-in-a-while job of
+  // uploading the spreadsheet and getting everything pinned.
+
+  var restFilter = { q: '', show: 'all', shown: 200 };
+
+  function renderRestaurants() {
+    return API.places('restaurants').then(function (all) {
+      state.restaurants = all;
+      var held = all.filter(function (p) { return p.supplyHold === true; }).length;
+      var placed = all.filter(hasPin).length;
+
+      set('<div class="card">'
+        + '<div class="grid metrics" style="margin-bottom:16px">'
+        + metric(all.length, 'Restaurants')
+        + metric(placed, 'On the map', placed === all.length ? 'ok' : '')
+        + metric(held, 'Supply on hold', held ? 'bad' : 'ok')
+        + metric(all.length - placed, 'No location yet', (all.length - placed) ? 'warn' : 'ok')
+        + '</div>'
+        + '<div class="bar">'
+        + '<div style="flex:1;min-width:240px"><input id="rSearch" placeholder="Search name, area, address or customer ID" value="' + esc(restFilter.q) + '"></div>'
+        + '<div><select id="rShow">'
+        + [['all', 'All'], ['hold', 'Supply on hold'], ['supplying', 'Supplying'],
+          ['nopin', 'No location yet'], ['check', 'Placed under a different name']]
+          .map(function (o) {
+            return '<option value="' + o[0] + '"' + (restFilter.show === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+          }).join('')
+        + '</select></div>'
+        + '</div>'
+        + '<div style="overflow-x:auto"><table><thead><tr>'
+        + '<th>Restaurant</th><th>Area</th><th>Customer ID</th><th>Supply</th><th>Location</th><th>Geofence</th><th></th>'
+        + '</tr></thead><tbody id="rBody"></tbody></table></div>'
+        + '<p class="tiny" id="rFoot"></p>'
+        + '</div>');
+
+      fillRestaurants();
+      bindHoldButtons();
+      on('#rSearch', 'input', function (e) {
+        restFilter.q = e.target.value; restFilter.shown = 200; fillRestaurants();
+      });
+      on('#rShow', 'change', function (e) {
+        restFilter.show = e.target.value; restFilter.shown = 200; fillRestaurants();
+      });
+    });
+  }
+
+  function restaurantMatches(p) {
+    var q = restFilter.q.trim().toLowerCase();
+    if (q && ((p.name || '') + ' ' + (p.area || '') + ' ' + (p.address || '') + ' ' + (p.customerId || ''))
+      .toLowerCase().indexOf(q) === -1) return false;
+    if (restFilter.show === 'hold') return p.supplyHold === true;
+    if (restFilter.show === 'supplying') return p.supplyHold !== true && p.active !== false;
+    if (restFilter.show === 'nopin') return !hasPin(p);
+    if (restFilter.show === 'check') return p.locationSource === 'places_name_differs';
+    return true;
+  }
+
+  function fillRestaurants() {
+    var all = (state.restaurants || []).filter(restaurantMatches);
+    var rows = all.slice(0, restFilter.shown);
+    var body = document.getElementById('rBody');
+    if (!body) return;
+
+    body.innerHTML = rows.length ? rows.map(function (p) {
+      var held = p.supplyHold === true;
+      return '<tr>'
+        + '<td><b>' + esc(p.name) + '</b>'
+        + (p.address ? '<br><span class="tiny">' + esc(p.address) + '</span>' : '') + '</td>'
+        + '<td>' + esc(p.area || '—') + '</td>'
+        + '<td>' + esc(p.customerId || '—') + '</td>'
+        + '<td>' + (held
+          ? '<span class="pill bad">on hold</span>'
+            + (p.holdReason ? '<br><span class="tiny">' + esc(p.holdReason) + '</span>' : '')
+          : (p.active === false ? '<span class="pill idle">inactive</span>' : '<span class="pill ok">supplying</span>')) + '</td>'
+        + '<td class="tiny">' + (hasPin(p)
+          ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5)
+            + (p.locationSource === 'places_name_differs' ? '<br><span class="pill warn">check the name</span>' : '')
+          : '<span class="pill warn">none yet</span>') + '</td>'
+        + '<td class="tiny">' + (p.radiusM ? p.radiusM + ' m' : 'default') + '</td>'
+        + '<td style="white-space:nowrap">'
+        + '<button class="btn-outline btn-sm" data-rest="' + esc(p.id) + '">Open</button> '
+        + '<button class="' + (held ? 'btn-outline' : 'btn-danger') + ' btn-sm" data-hold="' + esc(p.id) + '"'
+        + ' data-on="' + (held ? '0' : '1') + '" data-name="' + esc(p.name) + '">'
+        + (held ? 'Resume' : 'Stop') + '</button>'
+        + '</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="muted">Nothing matches.</td></tr>';
+
+    var foot = document.getElementById('rFoot');
+    if (foot) {
+      foot.innerHTML = all.length > rows.length
+        ? 'Showing ' + rows.length + ' of ' + all.length + '. <button class="link-sm" id="rMore">Show 200 more</button>'
+        : all.length + ' shown.';
+      var more = document.getElementById('rMore');
+      if (more) more.addEventListener('click', function () { restFilter.shown += 200; fillRestaurants(); });
+    }
+
+    document.querySelectorAll('[data-rest]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var p = (state.restaurants || []).find(function (x) { return x.id === b.getAttribute('data-rest'); });
+        if (p) restaurantModal(p);
+      });
+    });
+  }
+
   // ── Locations ──────────────────────────────────────────────────────────
   function renderPlaces() {
     return Promise.all([
@@ -822,6 +938,83 @@ window.DRIVERS_VIEWS = (function () {
     return 'warn';
   }
 
+  /* One restaurant, everything about it, and the two things the office does to
+   * it — stop supply, start it again.
+   *
+   * Opened from a pin on the map and from the restaurant list, because those
+   * are the two places somebody is looking at a restaurant and thinks "that
+   * one". Both routes land here so there is one answer to "what can I do with
+   * this customer", not two that drift apart.
+   */
+  function restaurantModal(place) {
+    var held = place.supplyHold === true;
+    var g = place.geocode || {};
+
+    modal('<h3 style="margin:0 0 2px">' + esc(place.name) + '</h3>'
+      + '<p class="tiny" style="margin:0 0 14px">' + esc(place.area || 'Area not recorded')
+      + (place.customerId ? ' · customer ' + esc(place.customerId) : '') + '</p>'
+
+      + (held
+        ? '<div class="banner"><b>Supply is on hold.</b>'
+          + (place.holdReason ? '<br>' + esc(place.holdReason) : '')
+          + (place.holdSetAt ? '<br><span class="tiny">Since ' + dateTime(place.holdSetAt)
+            + (place.holdSetBy ? ', by ' + esc(place.holdSetBy) : '') + '</span>' : '')
+          + '</div>'
+        : '')
+
+      + '<div class="evidence">'
+      + (place.address ? '<b>Address</b><br>' + esc(place.address) + '<br><br>' : '')
+      + '<b>On the map</b><br>'
+      + (hasPin(place)
+        ? place.lat.toFixed(5) + ', ' + place.lng.toFixed(5)
+          + ' · geofence ' + (place.radiusM ? place.radiusM + ' m' : 'default')
+          + (g.displayName ? '<br><span class="tiny">Found by Google as "' + esc(g.displayName) + '"</span>' : '')
+          + (place.locationSource === 'places_name_differs'
+            ? '<br><span class="tiny">Placed under a different name — worth a check.</span>' : '')
+        : 'No location yet, so it is not counted in any driver\'s kilometres.')
+      + '</div>'
+
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+      + (held
+        ? '<button class="btn-primary" id="rmResume" style="width:auto">Resume supply</button>'
+        : '<button class="btn-danger" id="rmHold" style="width:auto">Stop supply</button>')
+      + (hasPin(place)
+        ? '<button class="btn-outline" id="rmMove" style="width:auto">Move the pin</button>'
+        : '<button class="btn-outline" id="rmPlace" style="width:auto">Place on the map</button>')
+      + '<button class="btn-outline" id="rmClose" style="width:auto">Close</button>'
+      + '</div>'
+      + '<p id="rmMsg" class="tiny" style="margin:10px 0 0"></p>');
+
+    var root = document.getElementById('modal');
+    on('#rmClose', 'click', closeModal, root);
+
+    on('#rmHold', 'click', function () {
+      var reason = prompt('Why is supply to ' + place.name + ' on hold?\n\n'
+        + 'The drivers see this, and so does whoever lifts it later.\n'
+        + 'For example: payment overdue, shop closed for renovation, account under dispute.');
+      if (reason === null) return;
+      if (!reason.trim()) { document.getElementById('rmMsg').innerHTML = '<span class="err">A reason is needed.</span>'; return; }
+      document.getElementById('rmMsg').textContent = 'Saving…';
+      API.setHold(place.id, true, reason.trim())
+        .then(function () { closeModal(); render(); })
+        .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+    }, root);
+
+    on('#rmResume', 'click', function () {
+      document.getElementById('rmMsg').textContent = 'Saving…';
+      API.setHold(place.id, false, null)
+        .then(function () { closeModal(); render(); })
+        .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+    }, root);
+
+    var reposition = function () {
+      closeModal();
+      pickOnMap(place.id, place.name, place.lat, place.lng);
+    };
+    on('#rmMove', 'click', reposition, root);
+    on('#rmPlace', 'click', reposition, root);
+  }
+
   /* Supply currently stopped.
    *
    * On its own card, at the top, and only when there is something on it. A
@@ -1083,7 +1276,15 @@ window.DRIVERS_VIEWS = (function () {
    * a hold nobody explained is one nobody can lift with any confidence a week
    * later, and it is what the driver sees on their phone.
    */
+  // #view survives every render — only its contents are replaced — so a
+  // delegated listener attached per render would stack, and by the tenth
+  // render one click would fire ten confirmations. Attached once.
+  var holdBound = false;
+  var editPlaceBound = false;
+
   function bindHoldButtons() {
+    if (holdBound) return;
+    holdBound = true;
     view().addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('[data-hold]') : null;
       if (!btn) return;
@@ -1152,8 +1353,11 @@ window.DRIVERS_VIEWS = (function () {
       err.hidden = true;
       API.createPlace(kind, body).then(render).catch(function (ex) { err.textContent = ex.message; err.hidden = false; });
     });
-    // Delegated: the rows are drawn a page at a time, so the buttons do not all
-    // exist when this runs.
+    // Delegated, and attached once: the rows are drawn a page at a time so the
+    // buttons do not all exist when this runs, and #view outlives every render
+    // so re-attaching would stack a listener per visit to the tab.
+    if (editPlaceBound) return;
+    editPlaceBound = true;
     view().addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('[data-editplace]') : null;
       if (!btn) return;

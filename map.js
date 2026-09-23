@@ -186,7 +186,14 @@ window.DRIVERS_MAP = (function () {
     map.removeSource(sourceId);
   }
 
-  function drawPlaces(map, sourceId, places, color) {
+  /* @param onClick optional (placeId) => void, called when a pin is clicked.
+   *
+   * Only the id travels in the feature's properties. GeoJSON properties end up
+   * in the map's own data store, and there is no reason for a customer's
+   * address and account status to live in there — the caller already holds the
+   * full row and can look it up.
+   */
+  function drawPlaces(map, sourceId, places, color, onClick) {
     if (!map || !map.isStyleLoaded() || !places.length) return;
     // A place still awaiting a location has no coordinates. One such row would
     // make the whole layer invalid, so they are dropped here as well.
@@ -195,15 +202,38 @@ window.DRIVERS_MAP = (function () {
       features: places.filter(function (p) {
         return typeof p.lat === 'number' && isFinite(p.lat) && typeof p.lng === 'number' && isFinite(p.lng);
       }).map(function (p) {
-        return { type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { name: p.name } };
+        return {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+          properties: { name: p.name, id: p.id, onHold: p.supplyHold === true ? 1 : 0 },
+        };
       }),
     };
     if (map.getSource(sourceId)) { map.getSource(sourceId).setData(fc); return; }
     map.addSource(sourceId, { type: 'geojson', data: fc });
     map.addLayer({
-      id: sourceId + '-sym', type: 'circle', source: sourceId,
-      paint: { 'circle-radius': 6, 'circle-color': color || '#D7262F', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' },
+      id: sourceId + '-sym',
+      type: 'circle',
+      source: sourceId,
+      paint: {
+        'circle-radius': 6,
+        // A restaurant whose supply is stopped must not look like one a driver
+        // should be visiting. Hollow, in the warning colour, rather than the
+        // solid red of a live customer.
+        'circle-color': ['case', ['==', ['get', 'onHold'], 1], '#fdf3df', color || '#D7262F'],
+        'circle-stroke-width': 2,
+        'circle-stroke-color': ['case', ['==', ['get', 'onHold'], 1], '#8a5f14', '#fff'],
+      },
     });
+
+    if (typeof onClick !== 'function') return;
+    map.on('click', sourceId + '-sym', function (e) {
+      var f = e.features && e.features[0];
+      if (f && f.properties && f.properties.id) onClick(f.properties.id);
+    });
+    // A pin that does nothing on hover looks like decoration, so say it is not.
+    map.on('mouseenter', sourceId + '-sym', function () { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', sourceId + '-sym', function () { map.getCanvas().style.cursor = ''; });
   }
 
   function fitTo(map, coords) {
