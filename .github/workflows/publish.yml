@@ -70,7 +70,7 @@ jobs:
           # it a published fix stays invisible until somebody thinks to
           # hard-refresh, which is not a thing to ask of the office.
           sed -i -E "s#(src|href)=\"(api|app|map|views|config|xlsx)\.js\"#\\1=\"\\2.js?v=${SOURCE_SHA}\"#g" site/index.html
-          sed -i -E "s#href=\"(vendor/maplibre/maplibre-gl\.css)\"#href=\"\\1?v=${SOURCE_SHA}\"#g" site/index.html
+          sed -i -E "s#href=\"(theme\.css|vendor/maplibre/maplibre-gl\.css)\"#href=\"\\1?v=${SOURCE_SHA}\"#g" site/index.html
 
           cd site
           git config user.name  "github-actions[bot]"
