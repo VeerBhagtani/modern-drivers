@@ -65,6 +65,20 @@ jobs:
           cp -R source/dashboard/. site/
           touch site/.nojekyll        # keep Pages from running Jekyll over it
 
+          # The driver app is built in the other repository and published to
+          # its gh-pages branch. Carry it across so there is ONE address to
+          # give a driver — telling somebody to install from a different domain
+          # than the one the office uses is how people end up on old builds.
+          if git clone -q --depth 1 --branch gh-pages \
+               "https://github.com/${SOURCE_REPO}.git" apk-src 2>/dev/null \
+             && [ -f apk-src/modern-drivers.apk ]; then
+            cp apk-src/modern-drivers.apk site/modern-drivers.apk
+            echo "APK carried across ($(du -h site/modern-drivers.apk | cut -f1))."
+          else
+            echo "::warning::No APK found on ${SOURCE_REPO} gh-pages; the download link will 404."
+          fi
+          rm -rf apk-src
+
           # Stamp every local script and stylesheet with the source commit, so
           # a browser cannot serve yesterday's JavaScript from cache. Without
           # it a published fix stays invisible until somebody thinks to
