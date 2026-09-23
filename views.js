@@ -40,6 +40,7 @@ window.DRIVERS_VIEWS = (function () {
     ['orders', 'Deliveries'],
     ['reports', 'Reports'],
     ['alerts', 'Alerts'],
+    ['maintenance', 'Maintenance'],
     ['settings', 'Settings'],
   ];
 
@@ -95,7 +96,8 @@ window.DRIVERS_VIEWS = (function () {
     var fn = ({
       fleet: renderFleet, drivers: renderDrivers, review: renderReview,
       restaurants: renderRestaurants, places: renderPlaces,
-      orders: renderOrders, reports: renderReports, alerts: renderAlerts, settings: renderSettings,
+      orders: renderOrders, reports: renderReports, alerts: renderAlerts,
+      maintenance: renderMaintenance, settings: renderSettings,
     })[state.tab];
     set(spinner());
     fn().catch(function (e) { set(errBox(e)); });
@@ -1938,6 +1940,139 @@ window.DRIVERS_VIEWS = (function () {
         API.resolveAlert(e.currentTarget.dataset.resolve, note).then(render).catch(function (ex) { alert(ex.message); });
       });
     });
+  }
+
+  // ── Maintenance ────────────────────────────────────────────────────────
+  //
+  // One button: audit the running system and say what is wrong with it. What
+  // it audits is the DATA and the FLOW — restaurants nobody placed, drivers
+  // who never drove, rides never calculated, evidence that is missing. Not the
+  // source code: a web button that can change production code is one stolen
+  // session away from being arbitrary code execution on the business. Code
+  // maintenance runs in CI and opens a pull request a person merges.
+
+  var SEV = { critical: 'bad', high: 'bad', medium: 'warn', low: 'idle' };
+
+  function renderMaintenance() {
+    return API.maintenance().then(function (d) {
+      var audits = d.audits || [];
+      var last = audits[0] || null;
+
+      set('<div class="card">'
+        + '<h2>Maintenance</h2>'
+        + (d.hasKey
+          ? '<p class="muted">Audits the system as it is actually running — the restaurant list, whether drivers '
+            + 'are using the app, whether rides are being calculated, whether the evidence behind the kilometre '
+            + 'figures is there. It reads counts and totals only: no coordinates, no driver names, no customer '
+            + 'names ever leave this server.</p>'
+            + '<p style="margin:14px 0 4px"><button class="btn-primary" id="btnAudit" style="width:auto;font-size:1.02rem;padding:13px 24px">'
+            + 'Run an audit now</button></p>'
+            + '<p class="tiny" style="margin:0">Takes a minute or so. Costs a few rupees on your own Anthropic account.</p>'
+          : '<p class="err">No Anthropic API key saved yet — add one below and the audit can run.</p>')
+        + '<p id="auditMsg" class="tiny" style="margin:10px 0 0"></p>'
+        + '</div>'
+
+        + (last ? auditCard(last) : '')
+
+        + (audits.length > 1
+          ? '<details class="card"><summary class="disclose">Earlier audits (' + (audits.length - 1) + ')</summary>'
+            + '<div style="margin-top:14px">'
+            + audits.slice(1).map(function (a) {
+              var r = a.report || {};
+              return '<div style="padding:11px 0;border-bottom:1px solid var(--line-soft)">'
+                + '<span class="pill ' + (r.overall === 'healthy' ? 'ok' : r.overall === 'urgent' ? 'bad' : 'warn') + '">'
+                + esc(String(r.overall || '—').replace(/_/g, ' ')) + '</span> '
+                + '<span class="tiny">' + dateTime(a.at) + '</span>'
+                + '<div class="muted" style="margin-top:4px">' + esc(r.headline || '') + '</div>'
+                + '<div class="tiny">' + ((r.findings || []).length) + ' finding(s)</div>'
+                + '</div>';
+            }).join('')
+            + '</div></details>'
+          : '')
+
+        + '<details class="card"' + (d.hasKey ? '' : ' open') + '>'
+        + '<summary class="disclose">Anthropic API key '
+        + (d.hasKey ? '<span class="pill ok">saved</span>' : '<span class="pill bad">not set</span>')
+        + '</summary><div style="margin-top:14px">'
+        + '<p class="muted">Get one at <b>console.anthropic.com → API keys</b>. It is stored in Google Secret '
+        + 'Manager, never in this site and never shown again. Only the audit uses it, and only when you press the button — '
+        + 'nothing runs on a schedule and nothing is charged while you are not looking.</p>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<input id="anthKey" type="password" autocomplete="off" placeholder="sk-ant-…" style="max-width:420px">'
+        + '<button class="btn-outline btn-sm" id="btnAnthKey">' + (d.hasKey ? 'Replace key' : 'Save key') + '</button>'
+        + '</div><p id="anthMsg" class="tiny" style="margin-top:8px"></p>'
+        + '</div></details>'
+
+        + '<div class="card"><h2>What this does not do</h2>'
+        + '<p class="muted">This audits the <b>running system</b>. It does not read or change the source code, and '
+        + 'nothing here can deploy. That is deliberate: a button on a website that can rewrite production code is one '
+        + 'stolen login away from being a very bad day.</p>'
+        + '<p class="muted">Code maintenance runs separately, in GitHub, where Claude reviews the codebase on a '
+        + 'schedule and opens a pull request for you to read and merge. Nothing reaches the drivers until you approve it.</p>'
+        + '</div>');
+
+      on('#btnAudit', 'click', function () {
+        var btn = document.getElementById('btnAudit');
+        var msg = document.getElementById('auditMsg');
+        btn.disabled = true;
+        msg.textContent = 'Auditing… this takes a minute.';
+        API.runAudit().then(function () {
+          msg.innerHTML = '<span class="ok-msg">Done.</span>';
+          setTimeout(render, 600);
+        }).catch(function (e) {
+          btn.disabled = false;
+          msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+        });
+      });
+
+      on('#btnAnthKey', 'click', function () {
+        var v = (document.getElementById('anthKey').value || '').trim();
+        var m = document.getElementById('anthMsg');
+        if (!v) { m.innerHTML = '<span class="err">Paste the key first.</span>'; return; }
+        m.textContent = 'Saving…';
+        API.setIntegrationSecret('anthropic', v).then(function () {
+          document.getElementById('anthKey').value = '';
+          m.innerHTML = '<span class="ok-msg">Saved.</span>';
+          setTimeout(render, 700);
+        }).catch(function (e) { m.innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+      });
+    });
+  }
+
+  function auditCard(a) {
+    var r = a.report || {};
+    var findings = r.findings || [];
+    var order = { critical: 0, high: 1, medium: 2, low: 3 };
+    findings = findings.slice().sort(function (x, y) {
+      return (order[x.severity] ?? 9) - (order[y.severity] ?? 9);
+    });
+
+    return '<div class="card">'
+      + '<h2>Last audit · ' + dateTime(a.at) + '</h2>'
+      + '<div class="banner ' + (r.overall === 'healthy' ? 'info' : '') + '" style="font-size:.95rem">'
+      + esc(r.headline || '') + '</div>'
+      + (findings.length
+        ? findings.map(function (f) {
+          return '<div style="border-left:3px solid var(--' + (SEV[f.severity] === 'bad' ? 'bad' : SEV[f.severity] === 'warn' ? 'warn' : 'line') + ');'
+            + 'padding:2px 0 2px 14px;margin:16px 0">'
+            + '<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">'
+            + '<span class="pill ' + (SEV[f.severity] || 'idle') + '">' + esc(f.severity) + '</span>'
+            + '<b style="font-size:.97rem">' + esc(f.title) + '</b>'
+            + '<span class="pill idle">' + (f.whoCanDoIt === 'developer' ? 'needs a developer' : 'the office can fix this') + '</span>'
+            + '</div>'
+            + '<p class="muted" style="margin:7px 0 0">' + esc(f.whatIsWrong) + '</p>'
+            + '<p class="muted" style="margin:5px 0 0"><b>Why it matters:</b> ' + esc(f.whyItMatters) + '</p>'
+            + '<p class="muted" style="margin:5px 0 0"><b>What to do:</b> ' + esc(f.whatToDo) + '</p>'
+            + '</div>';
+        }).join('')
+        : '<p class="ok-msg">Nothing needs attention.</p>')
+      + ((r.workingWell || []).length
+        ? '<details style="margin-top:14px"><summary class="tiny" style="cursor:pointer">What is working well</summary>'
+          + '<ul class="muted" style="margin:8px 0 0;padding-left:20px">'
+          + r.workingWell.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('')
+          + '</ul></details>'
+        : '')
+      + '</div>';
   }
 
   // ── Settings ───────────────────────────────────────────────────────────
