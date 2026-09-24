@@ -352,24 +352,79 @@ window.DRIVERS_VIEWS = (function () {
     }).catch(function (e) { modal(errBox(e) + '<button class="btn-outline" onclick="document.getElementById(\'modalBg\').classList.remove(\'on\')">Close</button>'); });
   }
 
+  // The reason nearly every ride is stopped for. Tab in the empty reason box
+  // fills it in, and on a phone — no Tab key — the chip under it does.
+  var USUAL_STOP_REASON = 'End of shift — driver returned to Modern Dairy';
+  var LAST_STOPPER = 'md_last_stopper';
+
   function promptStop(rideId, emergency) {
     modal('<h3>' + (emergency ? 'Emergency stop' : 'Stop this ride') + '</h3>'
-      + '<p class="muted">The reason is recorded in the audit log against your account. It is required.</p>'
-      + '<div class="field"><label for="stopReason">Reason</label><input id="stopReason" placeholder="e.g. End of shift — driver returned to the dairy"></div>'
+      + '<p class="muted">The reason and who stopped it are recorded in the audit log. Both are required.</p>'
+      + '<div class="field"><label for="stopReason">Reason</label>'
+      + '<input id="stopReason" placeholder="' + esc(USUAL_STOP_REASON) + '" autocomplete="off">'
+      + '<p class="tiny" style="margin:6px 0 0">Press <b>Tab</b> for the usual reason, or '
+      + '<button type="button" class="link-sm" id="stopUsual">' + esc(USUAL_STOP_REASON) + '</button></p></div>'
+      + '<div class="field"><label for="stopBy">Stopped by</label>'
+      + '<select id="stopBy"><option value="">Loading names…</option></select></div>'
       + '<p id="stopErr" class="err" hidden></p>'
       + '<button class="' + (emergency ? 'btn-danger' : 'btn-primary') + '" id="stopGo">' + (emergency ? 'Emergency stop' : 'Stop ride') + '</button> '
       + '<button class="btn-outline" id="stopCancel">Cancel</button>');
     var root = document.getElementById('modal');
+    var reasonEl = document.getElementById('stopReason');
+    var byEl = document.getElementById('stopBy');
+    var err = document.getElementById('stopErr');
+    var showErr = function (m) { err.textContent = m; err.hidden = false; };
+    var ADD = '__add__';
+
+    // Tab in an empty box takes the usual reason, and then moves on to the
+    // next field as Tab normally does.
+    reasonEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Tab' && !e.shiftKey && !reasonEl.value.trim()) reasonEl.value = USUAL_STOP_REASON;
+    });
+    on('#stopUsual', 'click', function () { reasonEl.value = USUAL_STOP_REASON; byEl.focus(); }, root);
+
+    var remembered = '';
+    try { remembered = localStorage.getItem(LAST_STOPPER) || ''; } catch (e) { /* private window */ }
+    var fill = function (names, pick) {
+      byEl.innerHTML = '<option value="">— choose a name —</option>'
+        + names.map(function (n) {
+          return '<option value="' + esc(n) + '"' + (n === pick ? ' selected' : '') + '>' + esc(n) + '</option>';
+        }).join('')
+        + '<option value="' + ADD + '">+ Add a name…</option>';
+    };
+    API.stopNames().then(function (d) {
+      fill(d.names, d.names.indexOf(remembered) !== -1 ? remembered : '');
+      if (!d.names.length) {
+        showErr('No names yet. Choose "+ Add a name…" to add the people who stop rides.');
+      }
+    }).catch(function (e) { showErr(e.message); });
+
+    byEl.addEventListener('change', function () {
+      if (byEl.value !== ADD) return;
+      var name = prompt('Name of the person stopping rides:');
+      if (!name || !name.trim()) { byEl.value = ''; return; }
+      API.addStopName(name.trim()).then(function (d) {
+        var added = d.names.find(function (n) { return n.toLowerCase() === name.trim().toLowerCase(); }) || '';
+        fill(d.names, added);
+        err.hidden = true;
+      }).catch(function (e) { byEl.value = ''; showErr(e.message); });
+    });
+
     on('#stopCancel', 'click', closeModal, root);
     on('#stopGo', 'click', function () {
-      var reason = document.getElementById('stopReason').value.trim();
-      var err = document.getElementById('stopErr');
-      if (reason.length < 3) { err.textContent = 'Please give a reason.'; err.hidden = false; return; }
+      var reason = reasonEl.value.trim();
+      var by = byEl.value;
+      err.hidden = true;
+      if (reason.length < 3) { showErr('Please give a reason.'); return; }
+      if (!by || by === ADD) { showErr('Choose who is stopping this ride.'); return; }
+      try { localStorage.setItem(LAST_STOPPER, by); } catch (e) { /* private window */ }
       document.getElementById('stopGo').disabled = true;
-      API.stopRide(rideId, reason, emergency).then(function () { closeModal(); render(); })
-        .catch(function (e) { err.textContent = e.message; err.hidden = false; document.getElementById('stopGo').disabled = false; });
+      API.stopRide(rideId, reason, emergency, by).then(function () { closeModal(); render(); })
+        .catch(function (e) { showErr(e.message); document.getElementById('stopGo').disabled = false; });
     }, root);
+    reasonEl.focus();
   }
+
 
   // Full ride view: distances with their provenance, the segment list with
   // evidence, and the replay map drawn from the RAW points.
@@ -385,6 +440,8 @@ window.DRIVERS_VIEWS = (function () {
 
       var html = '<h3 style="margin:0 0 2px">' + esc(data.ride.driverName || data.ride.driverId) + ' — ' + esc(data.ride.dayKey) + '</h3>'
         + '<p class="tiny" style="margin:0 0 12px">' + dateTime(data.ride.startedAt) + ' → ' + (data.ride.stoppedAt ? dateTime(data.ride.stoppedAt) : 'still running')
+        + (data.ride.stoppedByName ? ' · stopped by ' + esc(data.ride.stoppedByName) : '')
+        + (data.ride.stopKind === 'day_end' ? ' · closed at the end of the day' : '')
         + ' · ' + (data.ride.pointCount || 0) + ' GPS fixes</p>';
 
       if (!p) {
@@ -747,6 +804,68 @@ window.DRIVERS_VIEWS = (function () {
 
   var restFilter = { q: '', show: 'all', shown: 200 };
 
+  /* Every restaurant on the map, confirmed with Google Maps.
+   *
+   * The office wants each pin checked against Google, however it was placed.
+   * The server checks a batch at a time; this keeps asking until nothing is
+   * left, so the progress is visible and no single request runs for minutes.
+   */
+  function googleCheckPanel(all) {
+    var n = googleCounts(all);
+    var problems = n.moved + n.name_differs + n.not_found;
+    return '<div class="banner ' + (problems || n.unchecked ? '' : 'info') + '" id="gcPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:220px"><b>Google Maps check</b><br>'
+      + n.confirmed + ' confirmed'
+      + (n.moved ? ' · <b>' + n.moved + ' pinned in the wrong place</b>' : '')
+      + (n.name_differs ? ' · ' + n.name_differs + ' under another name' : '')
+      + (n.not_found ? ' · ' + n.not_found + ' not on Google Maps' : '')
+      + (n.unchecked ? ' · ' + n.unchecked + ' not checked yet' : '')
+      + '<br><span id="gcMsg" class="tiny"></span></div>'
+      + (n.unchecked
+        ? '<button class="btn-primary btn-sm" id="gcRun" style="width:auto">Check ' + n.unchecked + ' with Google Maps</button>'
+        : '<button class="btn-outline btn-sm" id="gcRerun" style="width:auto">Check all again</button>')
+      + (problems ? '<button class="btn-outline btn-sm" id="gcShow" style="width:auto">Show the ' + problems + ' to look at</button>' : '')
+      + '</div>';
+  }
+
+  function bindGoogleCheck() {
+    var msg = function (t) { var e = document.getElementById('gcMsg'); if (e) e.innerHTML = t; };
+    var run = function (recheck) {
+      ['gcRun', 'gcRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = true; });
+      var done = 0;
+      // "Check all again": the first batch starts the re-check and the server
+      // answers with its own start time, which every later batch sends back.
+      var run = recheck ? true : undefined;
+      var step = function () {
+        return API.googleCheck(run).then(function (r) {
+          if (recheck) run = r.recheckBefore;
+          done += r.checked;
+          msg('Checked ' + done + ' · ' + r.remaining + ' to go…');
+          if (r.stoppedFor) { msg('<span class="err">' + esc(r.stoppedFor) + '</span>'); return null; }
+          if (r.remaining > 0 && r.checked > 0) return step();
+          return API.places('restaurants').then(function (list) {
+            state.restaurants = list;
+            render();
+          });
+        });
+      };
+      step().catch(function (e) {
+        msg('<span class="err">' + esc(e.message) + '</span>');
+        ['gcRun', 'gcRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = false; });
+      });
+    };
+    on('#gcRun', 'click', function () { run(false); });
+    on('#gcRerun', 'click', function () {
+      if (!confirm('Check every restaurant with Google Maps again?\n\nThis asks Google once per restaurant.')) return;
+      run(true);
+    });
+    on('#gcShow', 'click', function () {
+      restFilter.show = 'google_problem'; restFilter.shown = 200;
+      var sel = document.getElementById('rShow'); if (sel) sel.value = 'google_problem';
+      fillRestaurants(); bindHoldButtons();
+    });
+  }
+
   function renderRestaurants() {
     return API.places('restaurants').then(function (all) {
       state.restaurants = all;
@@ -766,11 +885,13 @@ window.DRIVERS_VIEWS = (function () {
         + metric(needPin, 'No location yet', needPin ? 'warn' : 'ok')
         + (trucks ? metric(trucks, 'Food trucks · no fixed address') : '')
         + '</div>'
+        + googleCheckPanel(all)
         + '<div class="bar">'
         + '<div style="flex:1;min-width:240px"><input id="rSearch" placeholder="Search name, area, address or customer ID" value="' + esc(restFilter.q) + '"></div>'
         + '<div><select id="rShow">'
         + [['all', 'All'], ['hold', 'Supply on hold'], ['supplying', 'Supplying'],
           ['nopin', 'No location yet'], ['check', 'Placed under a different name'],
+          ['google_problem', 'Google Maps disagrees'], ['google_unchecked', 'Not checked with Google Maps'],
           ['mobile', 'Food trucks / mobile']]
           .map(function (o) {
             return '<option value="' + o[0] + '"' + (restFilter.show === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
@@ -785,6 +906,7 @@ window.DRIVERS_VIEWS = (function () {
 
       fillRestaurants();
       bindHoldButtons();
+      bindGoogleCheck();
       on('#rSearch', 'input', function (e) {
         restFilter.q = e.target.value; restFilter.shown = 200; fillRestaurants();
       });
@@ -801,6 +923,11 @@ window.DRIVERS_VIEWS = (function () {
     if (restFilter.show === 'mobile') return isMobilePlace(p);
     if (restFilter.show === 'hold') return p.supplyHold === true;
     if (restFilter.show === 'check') return p.locationSource === 'places_name_differs';
+    if (restFilter.show === 'google_problem') {
+      var st = googleStatus(p);
+      return st === 'moved' || st === 'name_differs' || st === 'not_found';
+    }
+    if (restFilter.show === 'google_unchecked') return googleStatus(p) === 'unchecked';
     // A truck has no address, so it does not belong in a list of places that
     // are missing one — it would sit there forever looking like outstanding
     // work nobody can finish. It stays reachable from its own filter, and
@@ -816,6 +943,35 @@ window.DRIVERS_VIEWS = (function () {
   // thing: a customer with no fixed address.
   function isMobilePlace(p) {
     return !!p && (p.mobile === true || p.locationStatus === 'mobile');
+  }
+
+  /* What Google Maps says about a restaurant's pin. See
+   * backend/src/services/googleCheck.js for the four verdicts. */
+  function googleStatus(p) {
+    if (!hasPin(p) || isMobilePlace(p) || p.active === false) return null;
+    var c = p.googleCheck;
+    if (!c || !c.status) return 'unchecked';
+    // A check made against a pin that has since been moved says nothing about
+    // the pin now.
+    if (c.pinLat !== p.lat || c.pinLng !== p.lng) return 'unchecked';
+    return c.status;
+  }
+  function googlePill(p) {
+    var st = googleStatus(p);
+    var c = p.googleCheck || {};
+    if (!st) return '';
+    return '<br>' + ({
+      confirmed: '<span class="pill ok">Google Maps ✓</span>',
+      moved: '<span class="pill bad">Google: ' + (c.distanceM != null ? c.distanceM + ' m away' : 'elsewhere') + '</span>',
+      name_differs: '<span class="pill warn">Google name differs</span>',
+      not_found: '<span class="pill warn">not on Google Maps</span>',
+      unchecked: '<span class="pill idle">not checked</span>',
+    })[st];
+  }
+  function googleCounts(list) {
+    var n = { confirmed: 0, moved: 0, name_differs: 0, not_found: 0, unchecked: 0 };
+    list.forEach(function (p) { var st = googleStatus(p); if (st) n[st] += 1; });
+    return n;
   }
 
   function fillRestaurants() {
@@ -838,8 +994,7 @@ window.DRIVERS_VIEWS = (function () {
         + '<td class="tiny">' + (isMobilePlace(p)
           ? '<span class="pill idle">food truck</span>'
           : hasPin(p)
-            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5)
-              + (p.locationSource === 'places_name_differs' ? '<br><span class="pill warn">check the name</span>' : '')
+            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + googlePill(p)
             : '<span class="pill warn">none yet</span>') + '</td>'
         + '<td class="tiny">' + (p.radiusM ? p.radiusM + ' m' : 'default') + '</td>'
         + '<td style="white-space:nowrap">'
@@ -1226,8 +1381,11 @@ window.DRIVERS_VIEWS = (function () {
           + (g.displayName ? '<br><span class="tiny">Found by Google as "' + esc(g.displayName) + '"</span>' : '')
           + (place.locationSource === 'places_name_differs'
             ? '<br><span class="tiny">Placed under a different name — worth a check.</span>' : '')
+          + ' · <a href="https://www.google.com/maps/search/?api=1&query=' + place.lat + ',' + place.lng
+          + '" target="_blank" rel="noopener">see the pin on Google Maps</a>'
         : 'No location yet, so it is not counted in any driver\'s kilometres.')
       + '</div>'
+      + googleSection(place)
 
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
       + (held
@@ -1235,6 +1393,8 @@ window.DRIVERS_VIEWS = (function () {
         : '<button class="btn-danger" id="rmHold" style="width:auto">Stop supply</button>')
       + '<button class="btn-outline" id="rmMobile" style="width:auto">'
       + (truck ? 'Not a food truck' : 'Mark as a food truck') + '</button>'
+      + (!truck && (googleStatus(place) === 'moved' || googleStatus(place) === 'name_differs')
+        ? '<button class="btn-primary" id="rmUseGoogle" style="width:auto">Use Google Maps\' position</button>' : '')
       + (truck ? ''
         : hasPin(place)
           ? '<button class="btn-outline" id="rmMove" style="width:auto">Move the pin</button>'
@@ -1283,6 +1443,40 @@ window.DRIVERS_VIEWS = (function () {
     };
     on('#rmMove', 'click', reposition, root);
     on('#rmPlace', 'click', reposition, root);
+
+    on('#rmUseGoogle', 'click', function () {
+      var c = place.googleCheck || {};
+      if (!confirm('Move ' + place.name + '\'s pin to where Google Maps has it'
+        + (c.googleName ? ' ("' + c.googleName + '")' : '') + '?'
+        + (c.distanceM != null ? '\n\nThat is ' + c.distanceM + ' m from where it is now.' : '')
+        + '\n\nIts geofence moves with it, which changes which drives count as visits here from now on.')) return;
+      document.getElementById('rmMsg').textContent = 'Saving…';
+      API.useGooglePin(place.id)
+        .then(function () { closeModal(); render(); })
+        .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+    }, root);
+  }
+
+  function googleSection(place) {
+    var st = googleStatus(place);
+    if (!st) return '';
+    var c = place.googleCheck || {};
+    if (st === 'unchecked') {
+      return '<div class="evidence"><b>Google Maps</b><br>Not checked yet. Use "Check with Google Maps" on the Restaurants tab.</div>';
+    }
+    var title = ({
+      confirmed: 'Confirmed by Google Maps',
+      moved: 'Google Maps has it somewhere else',
+      name_differs: 'Google Maps has another name here',
+      not_found: 'Not found on Google Maps',
+    })[st];
+    return '<div class="evidence"><b>' + esc(title) + '</b><br>' + esc(c.detail || '')
+      + (c.googleAddress ? '<br><span class="tiny">' + esc(c.googleAddress) + '</span>' : '')
+      + (Number.isFinite(c.googleLat) && st !== 'confirmed'
+        ? '<br><a href="https://www.google.com/maps/search/?api=1&query=' + c.googleLat + ',' + c.googleLng
+          + (c.googlePlaceId ? '&query_place_id=' + encodeURIComponent(c.googlePlaceId) : '')
+          + '" target="_blank" rel="noopener">see Google\'s position</a>' : '')
+      + '<br><span class="tiny">Checked ' + dateTime(c.at) + '</span></div>';
   }
 
   /* Supply currently stopped.
@@ -2275,6 +2469,50 @@ window.DRIVERS_VIEWS = (function () {
       'Lower is more accurate and uses more battery and more database writes. 30 s is about 1,440 points per driver per day.'],
   };
 
+  /* The people offered as "stopped by" when a ride is stopped. Added from the
+   * stop dialog as they are needed; removed here. Drawn at the top of
+   * Settings, above the thresholds nobody should need to touch. */
+  function stopNamesCard() {
+    var host = document.createElement('div');
+    host.className = 'card';
+    host.id = 'stopNamesCard';
+    view().insertBefore(host, view().firstChild);
+    var draw = function (names) {
+      host.innerHTML = '<h2>People who stop rides</h2>'
+        + '<p class="muted" style="margin-top:0">Stopping a ride asks who did it, from this list. '
+        + 'Add names here or from the stop dialog.</p>'
+        + (names.length
+          ? '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">' + names.map(function (n) {
+            return '<span class="pill idle" style="font-size:.82rem;padding:6px 10px">' + esc(n)
+              + ' <button class="link-sm" data-rmname="' + esc(n) + '" title="Remove" style="margin-left:4px">✕</button></span>';
+          }).join('') + '</div>'
+          : '<p class="muted">No names yet.</p>')
+        + '<div class="bar" style="margin-bottom:0"><div style="flex:1"><input id="snNew" placeholder="Add a name" autocomplete="off"></div>'
+        + '<div style="flex:0 0 auto"><button class="btn-outline btn-sm" id="snAdd" style="width:auto">Add</button></div></div>'
+        + '<p id="snMsg" class="tiny" style="margin:8px 0 0"></p>';
+      var msg = function (t) { document.getElementById('snMsg').innerHTML = t; };
+      host.querySelectorAll('[data-rmname]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var n = b.getAttribute('data-rmname');
+          if (!confirm('Remove ' + n + ' from the list?\n\nRides they already stopped keep their name.')) return;
+          API.removeStopName(n).then(function (d) { draw(d.names); })
+            .catch(function (e) { msg('<span class="err">' + esc(e.message) + '</span>'); });
+        });
+      });
+      var add = function () {
+        var n = document.getElementById('snNew').value.trim();
+        if (!n) return;
+        API.addStopName(n).then(function (d) { draw(d.names); })
+          .catch(function (e) { msg('<span class="err">' + esc(e.message) + '</span>'); });
+      };
+      document.getElementById('snAdd').addEventListener('click', add);
+      document.getElementById('snNew').addEventListener('keydown', function (e) { if (e.key === 'Enter') add(); });
+    };
+    host.innerHTML = spinner('Loading names…');
+    API.stopNames().then(function (d) { draw(d.names); })
+      .catch(function (e) { host.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; });
+  }
+
   function renderSettings() {
     return Promise.all([API.config(), API.audit()]).then(function (r) {
       var c = r[0];
@@ -2324,6 +2562,8 @@ window.DRIVERS_VIEWS = (function () {
             + '<td class="tiny">' + esc(String(a.target || '').slice(0, 40)) + '</td>'
             + '<td class="tiny">' + esc(a.after ? JSON.stringify(a.after).slice(0, 140) : '') + '</td></tr>';
         }).join('') + '</tbody></table></div></div>');
+
+      stopNamesCard();
 
       on('#btnSaveCfg', 'click', function () {
         var overrides = {};

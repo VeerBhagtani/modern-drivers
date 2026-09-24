@@ -111,7 +111,12 @@ window.DRIVERS_API = (function () {
     rides: function (params) { return request(D + '/rides' + qs(params)); },
     history: function (driverId, from, to) { return request(D + '/history' + qs({ driverId: driverId, from: from, to: to })); },
     ride: function (id, withPoints) { return request(D + '/rides/' + id + (withPoints ? '?points=1' : '')); },
-    stopRide: function (id, reason, emergency) { return request(D + '/rides/' + id + '/stop', { method: 'POST', body: { reason: reason, emergency: !!emergency } }); },
+    stopRide: function (id, reason, emergency, stoppedByName) {
+      return request(D + '/rides/' + id + '/stop', { method: 'POST', body: { reason: reason, emergency: !!emergency, stoppedByName: stoppedByName } });
+    },
+    stopNames: function () { return request(D + '/stop-names'); },
+    addStopName: function (name) { return request(D + '/stop-names', { method: 'POST', body: { name: name } }); },
+    removeStopName: function (name) { return request(D + '/stop-names', { method: 'DELETE', body: { name: name } }); },
     processRide: function (id) { return request(D + '/rides/' + id + '/process', { method: 'POST', body: {} }); },
     processRange: function (body) { return request(D + '/process-range', { method: 'POST', body: body }); },
 
@@ -125,6 +130,15 @@ window.DRIVERS_API = (function () {
     runAudit: function () { return request(D + '/maintenance/audit', { method: 'POST', body: {} }); },
     locationsLock: function () { return request(D + '/locations-lock'); },
     setLocationsLock: function (locked) { return request(D + '/locations-lock', { method: 'PUT', body: { locked: locked } }); },
+    // run: undefined → check what is unchecked; true → start re-checking
+    // everything; a number → carry on a re-check started at that server time.
+    googleCheck: function (run) {
+      var body = run === true ? { recheck: true } : typeof run === 'number' ? { recheckBefore: run } : {};
+      return request(D + '/restaurants/google-check', { method: 'POST', body: body });
+    },
+    useGooglePin: function (id) {
+      return request(D + '/restaurants/' + id + '/use-google-pin', { method: 'POST', body: {} });
+    },
     setMobile: function (id, on) {
       return request(D + '/restaurants/' + id + '/mobile', { method: 'POST', body: { on: on } });
     },
