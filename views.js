@@ -30,6 +30,9 @@ window.DRIVERS_VIEWS = (function () {
   var TABS = [
     ['fleet', 'Live fleet'],
     ['drivers', 'Drivers'],
+    // One row per driver per day. Rides close with their day, so a ride is a
+    // day, and this is where a day's kilometres are looked up afterwards.
+    ['history', 'History'],
     ['review', 'Review'],
     // Two tabs, because they are two jobs. Restaurants is the daily one —
     // find a customer, stop or start their supply. Locations is the setup
@@ -94,7 +97,7 @@ window.DRIVERS_VIEWS = (function () {
 
   function render() {
     var fn = ({
-      fleet: renderFleet, drivers: renderDrivers, review: renderReview,
+      fleet: renderFleet, drivers: renderDrivers, history: renderHistory, review: renderReview,
       restaurants: renderRestaurants, places: renderPlaces,
       orders: renderOrders, reports: renderReports, alerts: renderAlerts,
       maintenance: renderMaintenance, settings: renderSettings,
@@ -126,7 +129,8 @@ window.DRIVERS_VIEWS = (function () {
         + metric(m.activeDrivers, 'Drivers on a ride', 'ok')
         + metric(m.completedRides, 'Rides finished today')
         + metric(km(m.totalKm), 'Total tracked today')
-        + metric(km(m.verifiedBusinessKm), 'Verified business', 'ok')
+        + metric(km(m.businessKm), 'Business today', 'ok')
+        + metric(km(m.personalKm), 'Personal today')
         + metric(km(m.unknownKm), 'Unknown — needs review', m.unknownKm > 0 ? 'warn' : '')
         + metric(m.trackingIssues, 'Tracking problems', m.trackingIssues ? 'bad' : '')
         + metric(m.openAlerts, 'Open alerts', m.openAlerts ? 'warn' : '')
@@ -274,7 +278,8 @@ window.DRIVERS_VIEWS = (function () {
       + list.map(function (r) {
         var today = !r.today.calculated
           ? '<span class="tiny">not calculated</span>'
-          : km(r.today.totalKm) + '<br><span class="tiny">' + km(r.today.verifiedBusinessKm) + ' verified · ' + km(r.today.unknownKm) + ' unknown</span>';
+          : km(r.today.totalKm) + '<br><span class="tiny">' + km(r.today.businessKm) + ' business · ' + km(r.today.personalKm) + ' personal'
+            + (r.today.unknownKm ? ' · ' + km(r.today.unknownKm) + ' undecided' : '') + '</span>';
         return '<tr class="click" data-driver="' + esc(r.driverId) + '" data-ride="' + esc(r.rideId || '') + '">'
           + '<td><b>' + esc(r.name) + '</b><br><span class="tiny">' + esc(r.driverCode) + (r.status !== 'active' ? ' · inactive' : '') + '</span></td>'
           + '<td><span class="pill ' + esc(r.rideStatus === 'active' ? 'active' : 'idle') + '">' + esc(r.rideStatus.replace('_', ' ')) + '</span>'
@@ -553,6 +558,7 @@ window.DRIVERS_VIEWS = (function () {
                 + '<td><span class="pill ' + (d.status === 'active' ? 'active' : 'idle') + '">' + esc(d.status) + '</span></td>'
                 + '<td class="tiny">' + (d.lastSeenAt ? dateTime(d.lastSeenAt) : 'never') + '</td>'
                 + '<td style="white-space:nowrap">'
+                + '<button class="btn-outline btn-sm" data-hist="' + esc(d.id) + '">History</button> '
                 + '<button class="btn-outline btn-sm" data-edit="' + esc(d.id) + '">Edit</button> '
                 + '<button class="btn-outline btn-sm" data-toggle="' + esc(d.id) + '" data-status="' + esc(d.status) + '">'
                 + (d.status === 'active' ? 'Switch off' : 'Switch on') + '</button>'
@@ -563,6 +569,11 @@ window.DRIVERS_VIEWS = (function () {
         + (pending && list.length
           ? '<div class="banner info">' + pending + ' driver(s) have no vehicle assigned. That is optional — it only affects reporting.</div>'
           : ''));
+
+      on('[data-hist]', 'click', function (e) {
+        hist.driverId = e.currentTarget.dataset.hist;
+        go('history');
+      });
 
       on('[data-toggle]', 'click', function (e) {
         var next = e.currentTarget.dataset.status === 'active' ? 'inactive' : 'active';
@@ -600,6 +611,110 @@ window.DRIVERS_VIEWS = (function () {
   }
 
   // ── Review queue ───────────────────────────────────────────────────────
+  // ── History ────────────────────────────────────────────────────────────
+  //
+  // A driver's days. Business and personal are split by the restaurant rule:
+  // driving to a restaurant, and between restaurants and the depot, is
+  // business; driving that leads to no restaurant is personal. Each day opens
+  // into the full ride view, with the route and the reason for every stretch.
+  var hist = { driverId: null, days: 30 };
+
+  function renderHistory() {
+    return API.drivers(true).then(function (drivers) {
+      if (!drivers.length) {
+        set('<div class="card"><h2>History</h2><p class="muted">Nobody has registered yet, so there is no history to show.</p></div>');
+        return null;
+      }
+      if (!hist.driverId || !drivers.some(function (d) { return d.id === hist.driverId; })) hist.driverId = drivers[0].id;
+      set('<div class="card"><h2>History</h2>'
+        + '<div class="bar">'
+        + '<div style="flex:2;min-width:220px"><label for="hDriver">Driver</label><select id="hDriver">'
+        + drivers.map(function (d) {
+          return '<option value="' + esc(d.id) + '"' + (d.id === hist.driverId ? ' selected' : '') + '>'
+            + esc(d.name) + ' · ' + esc(d.driverCode) + (d.status !== 'active' ? ' (switched off)' : '') + '</option>';
+        }).join('')
+        + '</select></div>'
+        + '<div><label for="hDays">Period</label><select id="hDays">'
+        + [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [180, 'Last 6 months']].map(function (o) {
+          return '<option value="' + o[0] + '"' + (hist.days === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('')
+        + '</select></div>'
+        + '</div>'
+        + '<p class="tiny" style="margin:0">Business is driving to a restaurant, and between restaurants and the depot. '
+        + 'Personal is driving that leads to no restaurant. Tap a day to see its route and why each stretch counted as it did.</p>'
+        + '</div>'
+        + '<div id="hBody">' + spinner('Loading history…') + '</div>');
+      on('#hDriver', 'change', function (e) { hist.driverId = e.target.value; loadHistory(); });
+      on('#hDays', 'change', function (e) { hist.days = Number(e.target.value); loadHistory(); });
+      return loadHistory();
+    });
+  }
+
+  function loadHistory() {
+    var body = document.getElementById('hBody');
+    if (!body) return Promise.resolve();
+    body.innerHTML = spinner('Loading history…');
+    var to = Date.now();
+    var asked = hist.driverId + ':' + hist.days;
+    return API.history(hist.driverId, to - hist.days * 86400000, to).then(function (h) {
+      // A slower answer for a driver the office has already moved away from
+      // must not replace the one they are looking at.
+      if (asked !== hist.driverId + ':' + hist.days || !document.getElementById('hBody')) return;
+      var t = h.totals;
+      var html = '<div class="grid metrics" style="margin-bottom:14px">'
+        + metric(t.calculatedDays + (t.days !== t.calculatedDays ? ' of ' + t.days : ''), 'Days driven')
+        + metric(km(t.business), 'Business', 'ok')
+        + metric(km(t.personal), 'Personal')
+        + metric(km(t.unknown), 'Undecided — needs review', t.unknown > 0 ? 'warn' : '')
+        + metric(km(t.total), 'Total')
+        + '</div>';
+      if (h.calculation && h.calculation.deferred) {
+        html += '<div class="banner info">' + h.calculation.deferred + ' more day(s) are still being calculated. Open this again in a minute.</div>';
+      }
+      if (!h.days.length) {
+        html += '<div class="card"><p class="muted">No rides in this period.</p></div>';
+      } else {
+        html += '<div class="card"><div style="overflow-x:auto"><table><thead><tr>'
+          + '<th>Day</th><th>Business</th><th>Personal</th><th>Undecided</th><th>GPS gap</th><th>Total</th><th>Restaurants</th>'
+          + '</tr></thead><tbody>'
+          + h.days.map(function (d) {
+            var k = d.km;
+            var shops = d.restaurants.length
+              ? d.restaurants.slice(0, 6).map(function (r) { return esc(r.name); }).join(', ')
+                + (d.restaurants.length > 6 ? ' and ' + (d.restaurants.length - 6) + ' more' : '')
+              : '<span class="tiny">none</span>';
+            return '<tr class="click" data-ride="' + esc(d.rideId) + '">'
+              + '<td><b>' + esc(dayLabel(d.dayKey)) + '</b><br><span class="tiny">'
+              + time(d.startedAt) + ' – ' + (d.status === 'active' ? 'still running' : time(d.stoppedAt))
+              + (d.stopKind === 'day_end' ? ' · closed at day end' : '') + '</span></td>'
+              + (k
+                ? '<td><b>' + km(k.business) + '</b>'
+                  + (k.verifiedBusiness ? '<br><span class="tiny">' + km(k.verifiedBusiness) + ' verified</span>' : '') + '</td>'
+                  + '<td>' + km(k.personal) + '</td>'
+                  + '<td>' + (k.unknown ? '<span class="pill warn">' + km(k.unknown) + '</span>' : km(0)) + '</td>'
+                  + '<td>' + km(k.gapEstimate) + '</td>'
+                  + '<td><b>' + km(k.total) + '</b></td>'
+                : '<td colspan="5"><span class="tiny">' + (d.pointCount ? 'not calculated yet' : 'no GPS recorded') + '</span></td>')
+              + '<td>' + shops + '</td>'
+              + '</tr>';
+          }).join('')
+          + '</tbody></table></div></div>';
+      }
+      document.getElementById('hBody').innerHTML = html;
+      on('tr[data-ride]', 'click', function (e) { openRide(e.currentTarget.dataset.ride); }, document.getElementById('hBody'));
+    }).catch(function (e) {
+      var b = document.getElementById('hBody');
+      if (b) b.innerHTML = errBox(e);
+    });
+  }
+
+  // "Thu 24 Sep" from "2026-09-24", read as a calendar day, not a time: parsed
+  // at noon so no timezone can move it to the day before.
+  function dayLabel(dayKey) {
+    if (!dayKey) return '—';
+    return new Date(dayKey + 'T12:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+
   function renderReview() {
     return API.reviewQueue({}).then(function (q) {
       set('<div class="card"><h2>Segments needing review</h2>'

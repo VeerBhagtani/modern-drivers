@@ -109,6 +109,7 @@ window.DRIVERS_API = (function () {
     setDriverStatus: function (id, status) { return request(D + '/' + id + '/status', { method: 'POST', body: { status: status } }); },
 
     rides: function (params) { return request(D + '/rides' + qs(params)); },
+    history: function (driverId, from, to) { return request(D + '/history' + qs({ driverId: driverId, from: from, to: to })); },
     ride: function (id, withPoints) { return request(D + '/rides/' + id + (withPoints ? '?points=1' : '')); },
     stopRide: function (id, reason, emergency) { return request(D + '/rides/' + id + '/stop', { method: 'POST', body: { reason: reason, emergency: !!emergency } }); },
     processRide: function (id) { return request(D + '/rides/' + id + '/process', { method: 'POST', body: {} }); },
