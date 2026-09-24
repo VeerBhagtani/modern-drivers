@@ -124,6 +124,9 @@ window.DRIVERS_API = (function () {
     runAudit: function () { return request(D + '/maintenance/audit', { method: 'POST', body: {} }); },
     locationsLock: function () { return request(D + '/locations-lock'); },
     setLocationsLock: function (locked) { return request(D + '/locations-lock', { method: 'PUT', body: { locked: locked } }); },
+    setMobile: function (id, on) {
+      return request(D + '/restaurants/' + id + '/mobile', { method: 'POST', body: { on: on } });
+    },
     setHold: function (id, on, reason) {
       return request(D + '/restaurants/' + id + '/hold', { method: 'POST', body: { on: on, reason: reason } });
     },

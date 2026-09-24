@@ -637,19 +637,26 @@ window.DRIVERS_VIEWS = (function () {
       state.restaurants = all;
       var held = all.filter(function (p) { return p.supplyHold === true; }).length;
       var placed = all.filter(hasPin).length;
+      // Trucks are counted apart from everything else. Left in "no location
+      // yet" they would be permanent outstanding work: there is no address to
+      // find, so that number could never reach zero.
+      var trucks = all.filter(isMobilePlace).length;
+      var needPin = all.filter(function (p) { return !hasPin(p) && !isMobilePlace(p); }).length;
 
       set('<div class="card">'
         + '<div class="grid metrics" style="margin-bottom:16px">'
-        + metric(all.length, 'Restaurants')
-        + metric(placed, 'On the map', placed === all.length ? 'ok' : '')
+        + metric(all.length, 'Customers')
+        + metric(placed, 'On the map', placed ? 'ok' : '')
         + metric(held, 'Supply on hold', held ? 'bad' : 'ok')
-        + metric(all.length - placed, 'No location yet', (all.length - placed) ? 'warn' : 'ok')
+        + metric(needPin, 'No location yet', needPin ? 'warn' : 'ok')
+        + (trucks ? metric(trucks, 'Food trucks · no fixed address') : '')
         + '</div>'
         + '<div class="bar">'
         + '<div style="flex:1;min-width:240px"><input id="rSearch" placeholder="Search name, area, address or customer ID" value="' + esc(restFilter.q) + '"></div>'
         + '<div><select id="rShow">'
         + [['all', 'All'], ['hold', 'Supply on hold'], ['supplying', 'Supplying'],
-          ['nopin', 'No location yet'], ['check', 'Placed under a different name']]
+          ['nopin', 'No location yet'], ['check', 'Placed under a different name'],
+          ['mobile', 'Food trucks / mobile']]
           .map(function (o) {
             return '<option value="' + o[0] + '"' + (restFilter.show === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
           }).join('')
@@ -676,11 +683,24 @@ window.DRIVERS_VIEWS = (function () {
     var q = restFilter.q.trim().toLowerCase();
     if (q && ((p.name || '') + ' ' + (p.area || '') + ' ' + (p.address || '') + ' ' + (p.customerId || ''))
       .toLowerCase().indexOf(q) === -1) return false;
+    if (restFilter.show === 'mobile') return isMobilePlace(p);
     if (restFilter.show === 'hold') return p.supplyHold === true;
-    if (restFilter.show === 'supplying') return p.supplyHold !== true && p.active !== false;
-    if (restFilter.show === 'nopin') return !hasPin(p);
     if (restFilter.show === 'check') return p.locationSource === 'places_name_differs';
+    // A truck has no address, so it does not belong in a list of places that
+    // are missing one — it would sit there forever looking like outstanding
+    // work nobody can finish. It stays reachable from its own filter, and
+    // from All.
+    if (restFilter.show === 'nopin') return !hasPin(p) && !isMobilePlace(p);
+    if (restFilter.show === 'supplying') {
+      return p.supplyHold !== true && p.active !== false && !isMobilePlace(p);
+    }
     return true;
+  }
+
+  // Mirrors backend/src/drivers/mobileVendor.js — either flag means the same
+  // thing: a customer with no fixed address.
+  function isMobilePlace(p) {
+    return !!p && (p.mobile === true || p.locationStatus === 'mobile');
   }
 
   function fillRestaurants() {
@@ -700,10 +720,12 @@ window.DRIVERS_VIEWS = (function () {
           ? '<span class="pill bad">on hold</span>'
             + (p.holdReason ? '<br><span class="tiny">' + esc(p.holdReason) + '</span>' : '')
           : (p.active === false ? '<span class="pill idle">inactive</span>' : '<span class="pill ok">supplying</span>')) + '</td>'
-        + '<td class="tiny">' + (hasPin(p)
-          ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5)
-            + (p.locationSource === 'places_name_differs' ? '<br><span class="pill warn">check the name</span>' : '')
-          : '<span class="pill warn">none yet</span>') + '</td>'
+        + '<td class="tiny">' + (isMobilePlace(p)
+          ? '<span class="pill idle">food truck</span>'
+          : hasPin(p)
+            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5)
+              + (p.locationSource === 'places_name_differs' ? '<br><span class="pill warn">check the name</span>' : '')
+            : '<span class="pill warn">none yet</span>') + '</td>'
         + '<td class="tiny">' + (p.radiusM ? p.radiusM + ' m' : 'default') + '</td>'
         + '<td style="white-space:nowrap">'
         + '<button class="btn-outline btn-sm" data-rest="' + esc(p.id) + '">Open</button> '
@@ -1062,6 +1084,7 @@ window.DRIVERS_VIEWS = (function () {
    */
   function restaurantModal(place) {
     var held = place.supplyHold === true;
+    var truck = isMobilePlace(place);
     var g = place.geocode || {};
 
     modal('<h3 style="margin:0 0 2px">' + esc(place.name) + '</h3>'
@@ -1079,7 +1102,10 @@ window.DRIVERS_VIEWS = (function () {
       + '<div class="evidence">'
       + (place.address ? '<b>Address</b><br>' + esc(place.address) + '<br><br>' : '')
       + '<b>On the map</b><br>'
-      + (hasPin(place)
+      + (truck
+        ? 'A food truck — no fixed address, so it is not on the map and cannot be a planned stop. '
+          + 'It is still a customer and still appears in reports.'
+        : hasPin(place)
         ? place.lat.toFixed(5) + ', ' + place.lng.toFixed(5)
           + ' · geofence ' + (place.radiusM ? place.radiusM + ' m' : 'default')
           + (g.displayName ? '<br><span class="tiny">Found by Google as "' + esc(g.displayName) + '"</span>' : '')
@@ -1092,9 +1118,12 @@ window.DRIVERS_VIEWS = (function () {
       + (held
         ? '<button class="btn-primary" id="rmResume" style="width:auto">Resume supply</button>'
         : '<button class="btn-danger" id="rmHold" style="width:auto">Stop supply</button>')
-      + (hasPin(place)
-        ? '<button class="btn-outline" id="rmMove" style="width:auto">Move the pin</button>'
-        : '<button class="btn-outline" id="rmPlace" style="width:auto">Place on the map</button>')
+      + '<button class="btn-outline" id="rmMobile" style="width:auto">'
+      + (truck ? 'Not a food truck' : 'Mark as a food truck') + '</button>'
+      + (truck ? ''
+        : hasPin(place)
+          ? '<button class="btn-outline" id="rmMove" style="width:auto">Move the pin</button>'
+          : '<button class="btn-outline" id="rmPlace" style="width:auto">Place on the map</button>')
       + '<button class="btn-outline" id="rmClose" style="width:auto">Close</button>'
       + '</div>'
       + '<p id="rmMsg" class="tiny" style="margin:10px 0 0"></p>');
@@ -1117,6 +1146,18 @@ window.DRIVERS_VIEWS = (function () {
     on('#rmResume', 'click', function () {
       document.getElementById('rmMsg').textContent = 'Saving…';
       API.setHold(place.id, false, null)
+        .then(function () { closeModal(); render(); })
+        .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+    }, root);
+
+    on('#rmMobile', 'click', function () {
+      if (truck && !confirm('Move ' + place.name + ' back to the restaurant list?\n\n'
+        + 'It will be looked up and placed on the map like any other customer.')) return;
+      if (!truck && !confirm('Mark ' + place.name + ' as a food truck?\n\n'
+        + 'It will be taken off the map and out of route planning. Any pin it has is removed, '
+        + 'because a pin on a truck geofences a place it may never park.')) return;
+      document.getElementById('rmMsg').textContent = 'Saving…';
+      API.setMobile(place.id, !truck)
         .then(function () { closeModal(); render(); })
         .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
     }, root);
