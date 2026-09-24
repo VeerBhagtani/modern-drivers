@@ -274,6 +274,101 @@ details.card>summary.disclose:focus-visible{outline:none;box-shadow:var(--focus)
 
 [hidden]{display:none!important;}
 
+/* ── phone ───────────────────────────────────────────────────────────────
+   The office does not only sit at a desk: the question "where is Ramesh?"
+   comes at the depot gate as often as at the PC. Everything above is the
+   desktop layout; this is what changes when the screen is a phone. */
+@media (max-width:720px){
+  .wrap{padding:14px 12px 64px;}
+
+  /* The bar scrolls away and the tabs stay pinned. Both sticky only works if
+     the bar is exactly the height the tabs are offset by, and on a phone it
+     wraps — the tabs slid under it and could not be tapped. */
+  .topbar{position:static;padding:10px 14px;gap:10px;flex-wrap:nowrap;}
+  .topbar img{width:26px;height:26px;}
+  .topbar h1{font-size:.95rem;white-space:nowrap;}
+  .topbar .meta,.wide-only{display:none;}
+  .topbar button{padding:8px 11px;font-size:.78rem;white-space:nowrap;}
+  #btnPassword{text-transform:capitalize;}   /* "password" once "Change " is hidden */
+  .tabs{top:0;padding:0 4px;}
+  .tabs button{padding:13px 11px;}
+
+  .card{padding:16px;border-radius:12px;margin-bottom:12px;}
+  details.card{padding:14px 16px;}
+  .card h2{margin-bottom:12px;}
+
+  /* Two tiles to a row at any phone width, never one lonely tile per line. */
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+  .metric{padding:13px 14px;}
+  .metric .v{font-size:1.45rem;}
+
+  /* Maps set their height inline, so these need !important to win. Sized to
+     the screen, not in pixels, so a map is never taller than the phone. */
+  #map,#tracksMap{height:58vh!important;min-height:300px;}
+  #replayMap,#pickMap{height:46vh!important;min-height:260px;}
+
+  /* iPhones zoom the whole page in on any input under 16px and do not zoom
+     back out. */
+  input,select,textarea{font-size:16px;}
+
+  /* Filter rows: fields share the line and wrap, rather than keeping desktop
+     minimum widths that push past the edge of the screen. */
+  .bar{gap:8px;}
+  .bar>div{flex:1 1 140px!important;min-width:0!important;}
+  /* A search box gets its own line: squeezed beside a dropdown it showed
+     "Search n" and nothing typed into it could be read. Dates and dropdowns
+     still share a line. */
+  .bar>div:has(>input:not([type])),
+  .bar>div:has(>input[type=text]),
+  .bar>div:has(>input[type=search]){flex-basis:100%!important;}
+
+  /* Live fleet: the map before the list. With forty drivers the list is forty
+     cards long, and the map is the thing a phone is pulled out to look at. */
+  .split>.card:last-child{order:-1;}
+
+  /* Big enough to hit with a thumb. */
+  button{min-height:42px;}
+  .btn-sm{min-height:36px;padding:7px 12px;}
+  .link-sm{min-height:0;}
+
+  /* Dialogs rise from the bottom, where the thumb already is. */
+  .modal-bg{align-items:flex-end;padding:0;}
+  .modal{
+    max-width:none;border-radius:18px 18px 0 0;max-height:92vh;
+    padding:20px 16px calc(22px + env(safe-area-inset-bottom));
+  }
+
+  .signin{padding:30px 22px;border-radius:18px;}
+
+  /* Tables become a stack of cards (responsive.js labels the cells). The
+     first column — the name — is the card's title; every other value sits
+     beside the name of its column. Floats rather than flex, because a cell
+     often holds two lines ("12.4 km", then a small line under it) and flex
+     would lay those side by side. */
+  table.stack thead{display:none;}
+  table.stack,table.stack tbody,table.stack tr{display:block;width:100%;}
+  table.stack tr{
+    border:1px solid var(--line);border-radius:12px;background:var(--surface);
+    padding:2px 14px;margin-bottom:10px;
+  }
+  table.stack tbody tr:hover{background:var(--surface);}
+  table.stack tr.click:active{background:var(--navy-soft);}
+  table.stack td{
+    display:flow-root;text-align:right;padding:9px 0;
+    border-bottom:1px solid var(--line-soft);
+  }
+  table.stack td:last-child{border-bottom:none;}
+  table.stack td::before{
+    content:attr(data-label);float:left;margin-right:14px;max-width:45%;text-align:left;
+    font-size:.66rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--ink-3);line-height:1.9;
+  }
+  table.stack td:first-child{text-align:left;font-size:.95rem;padding-top:12px;}
+  table.stack td:first-child::before,
+  table.stack td[data-label=""]::before{display:none;}
+  table.stack td.span{text-align:left;}
+}
+
 /* Print: the office prints reports, and a navy bar across the top of every
    page is a waste of toner and a distraction on paper. */
 @media print{
