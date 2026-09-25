@@ -90,7 +90,7 @@ window.DRIVERS_VIEWS = (function () {
     // Every map object belongs to a DOM node that is about to be replaced.
     // Keeping a reference would leave the next render talking to a container
     // that is no longer on the page.
-    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null; state.wrongMap = null;
+    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null; state.sheetMap = null;
     renderTabs();
     render();
   }
@@ -898,234 +898,299 @@ window.DRIVERS_VIEWS = (function () {
 
   var restFilter = { q: '', show: 'all', shown: 200 };
 
-  /* Every restaurant on the map, confirmed with Google Maps.
+  /* The Excel sheet against Google Maps.
    *
-   * The office wants each pin checked against Google, however it was placed.
-   * The server checks a batch at a time; this keeps asking until nothing is
+   * For every restaurant, the address in the office's sheet is looked up on
+   * its own, and the restaurant is looked up on Google Maps by name on its own;
+   * the two answers are compared (backend/src/services/sheetCheck.js). The
+   * server works through a batch at a time; this keeps asking until nothing is
    * left, so the progress is visible and no single request runs for minutes.
    */
-  function googleCheckPanel(all) {
-    var n = googleCounts(all);
-    var problems = n.moved + n.name_differs + n.not_found;
-    return '<div class="banner ' + (problems || n.unchecked ? '' : 'info') + '" id="gcPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
-      + '<div style="flex:1;min-width:220px"><b>Google Maps check</b><br>'
-      + n.confirmed + ' confirmed'
-      + (n.moved ? ' · <b>' + n.moved + ' pinned in the wrong place</b>' : '')
-      + (n.name_differs ? ' · ' + n.name_differs + ' under another name' : '')
-      + (n.not_found ? ' · ' + n.not_found + ' not on Google Maps' : '')
+  var SHEET_KIND = {
+    match: ['Matches', 'ok'],
+    far: ['Doesn\'t match', 'bad'],
+    no_business: ['Not on Google Maps', 'warn'],
+    no_address: ['No usable address in sheet', 'idle'],
+  };
+  function sheetStatus(p) {
+    if (!p || !p.name || p.active === false || isMobilePlace(p)) return null;
+    var c = p.sheetCheck;
+    if (!c || !c.status) return 'unchecked';
+    // A re-imported sheet with a different name or address makes the old
+    // verdict meaningless; the server compares the same key.
+    if (c.inputKey !== sheetKey(p)) return 'unchecked';
+    return c.status;
+  }
+  function sheetKey(p) {
+    return [p.name, p.address, p.area].map(function (s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }).join('|');
+  }
+  function sheetCounts(list) {
+    var n = { match: 0, far: 0, no_business: 0, no_address: 0, unchecked: 0 };
+    list.forEach(function (p) { var st = sheetStatus(p); if (st) n[st] += 1; });
+    return n;
+  }
+  function sheetPill(p) {
+    var st = sheetStatus(p);
+    if (!st) return '';
+    if (st === 'unchecked') return '<br><span class="pill idle">sheet not checked</span>';
+    var c = p.sheetCheck; var k = SHEET_KIND[st];
+    return '<br><span class="pill ' + k[1] + '">' + esc(k[0]) + (st === 'far' && c.apartM != null ? ' · ' + distText(c.apartM) : '') + '</span>';
+  }
+  function distText(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : m + ' m'; }
+  // A pin further than this from where the sheet and Google both put the
+  // restaurant is wrong by any reading (the server uses the same figure).
+  var PIN_OFF_M = 150;
+  function pinOff(p) {
+    var c = p.sheetCheck || {};
+    if (!hasPin(p) || !isFinite(c.googleLat)) return !hasPin(p) && sheetStatus(p) === 'match';
+    var dLat = (p.lat - c.googleLat) * 111320;
+    var dLng = (p.lng - c.googleLng) * 111320 * Math.cos(p.lat * Math.PI / 180);
+    return Math.sqrt(dLat * dLat + dLng * dLng) > PIN_OFF_M;
+  }
+
+  function sheetPanel(all) {
+    var n = sheetCounts(all);
+    var problems = n.far + n.no_business;
+    return '<div class="banner ' + (problems || n.unchecked ? '' : 'info') + '" id="scPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:220px"><b>Excel sheet vs Google Maps</b><br>'
+      + n.match + ' match'
+      + (n.far ? ' · <b>' + n.far + ' don\'t match</b>' : '')
+      + (n.no_business ? ' · ' + n.no_business + ' not on Google Maps' : '')
+      + (n.no_address ? ' · ' + n.no_address + ' no usable address' : '')
       + (n.unchecked ? ' · ' + n.unchecked + ' not checked yet' : '')
-      + '<br><span id="gcMsg" class="tiny"></span></div>'
+      + '<br><span id="scMsg" class="tiny"></span></div>'
       + (n.unchecked
-        ? '<button class="btn-primary btn-sm" id="gcRun" style="width:auto">Check ' + n.unchecked + ' with Google Maps</button>'
-        : '<button class="btn-outline btn-sm" id="gcRerun" style="width:auto">Check all again</button>')
-      + (problems ? '<button class="btn-primary btn-sm" id="gcWrong" style="width:auto">Wrong locations on the map (' + problems + ')</button>'
-        + '<button class="btn-outline btn-sm" id="gcShow" style="width:auto">Filter the list</button>' : '')
+        ? '<button class="btn-primary btn-sm" id="scRun" style="width:auto">Check ' + n.unchecked + ' against Google Maps</button>'
+        : '<button class="btn-outline btn-sm" id="scRerun" style="width:auto">Check all again</button>')
+      + '<button class="btn-' + (problems ? 'primary' : 'outline') + ' btn-sm" id="scResults" style="width:auto">See the results on the map</button>'
       + '</div>';
   }
 
-  function bindGoogleCheck() {
-    var msg = function (t) { var e = document.getElementById('gcMsg'); if (e) e.innerHTML = t; };
-    var run = function (recheck) {
-      ['gcRun', 'gcRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = true; });
-      var done = 0;
-      // "Check all again": the first batch starts the re-check and the server
-      // answers with its own start time, which every later batch sends back.
-      var run = recheck ? true : undefined;
-      var step = function () {
-        return API.googleCheck(run).then(function (r) {
-          if (recheck) run = r.recheckBefore;
-          done += r.checked;
-          msg('Checked ' + done + ' · ' + r.remaining + ' to go…');
-          if (r.stoppedFor) { msg('<span class="err">' + esc(r.stoppedFor) + '</span>'); return null; }
-          if (r.remaining > 0 && r.checked > 0) return step();
-          return API.places('restaurants').then(function (list) {
-            state.restaurants = list;
-            render();
-          });
-        });
-      };
-      step().catch(function (e) {
-        msg('<span class="err">' + esc(e.message) + '</span>');
-        ['gcRun', 'gcRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = false; });
+  /* Run the check until nothing is left. onDone runs after the last batch. */
+  function runSheetCheck(recheck, msg, onDone, stillHere) {
+    var done = 0;
+    // "Check all again": the first batch starts the re-check and the server
+    // answers with its own start time, which every later batch sends back.
+    var run = recheck ? true : undefined;
+    var step = function () {
+      return API.sheetCheck(run).then(function (r) {
+        if (recheck) run = r.recheckBefore;
+        done += r.checked;
+        msg('Checked ' + done + ' · ' + r.remaining + ' to go…');
+        if (r.stoppedFor) { msg('<span class="err">' + esc(r.stoppedFor) + '</span>'); return false; }
+        if (r.remaining > 0 && r.checked > 0 && stillHere()) return step();
+        return onDone();
       });
     };
-    on('#gcRun', 'click', function () { run(false); });
-    on('#gcRerun', 'click', function () {
-      if (!confirm('Check every restaurant with Google Maps again?\n\nThis asks Google once per restaurant.')) return;
-      run(true);
-    });
-    on('#gcWrong', 'click', function () { renderWrongLocations().catch(function (e) { set(errBox(e)); }); });
-    on('#gcShow', 'click', function () {
-      restFilter.show = 'google_problem'; restFilter.shown = 200;
-      var sel = document.getElementById('rShow'); if (sel) sel.value = 'google_problem';
-      fillRestaurants(); bindHoldButtons();
-    });
+    return step();
   }
 
-  /* Every restaurant Google Maps disagrees with, on one screen: where our pin
-   * is, where Google has the business, how far apart, with links that open
-   * each position in Google Maps, and the fix one tap away. */
-  var WRONG_KIND = {
-    moved: ['Pinned in the wrong place', 'bad'],
-    name_differs: ['Another name at the pin', 'warn'],
-    not_found: ['Not found on Google Maps', 'warn'],
-  };
-  function gmapsAt(lat, lng) { return 'https://www.google.com/maps/search/?api=1&query=' + lat + ',' + lng; }
+  function bindSheetCheck() {
+    var msg = function (t) { var e = document.getElementById('scMsg'); if (e) e.innerHTML = t; };
+    var go_ = function (recheck) {
+      ['scRun', 'scRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = true; });
+      runSheetCheck(recheck, msg, function () {
+        return API.places('restaurants').then(function (list) { state.restaurants = list; render(); });
+      }, function () { return !!document.getElementById('scPanel'); }).catch(function (e) {
+        msg('<span class="err">' + esc(e.message) + '</span>');
+        ['scRun', 'scRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = false; });
+      });
+    };
+    on('#scRun', 'click', function () { go_(false); });
+    on('#scRerun', 'click', function () {
+      if (!confirm('Check every restaurant against Google Maps again?\n\nThis asks Google twice per restaurant (the address, and the name).')) return;
+      go_(true);
+    });
+    on('#scResults', 'click', function () { renderSheetResults().catch(function (e) { set(errBox(e)); }); });
+  }
+
+  function gmapsAt(lat, lng) { return 'https://www.google.com/maps/search/?api=1&query=' + (+lat).toFixed(6) + ',' + (+lng).toFixed(6); }
   function gmapsPlace(c, p) {
     return c.googlePlaceId
       ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(c.googleName || p.name) + '&query_place_id=' + encodeURIComponent(c.googlePlaceId)
       : gmapsAt(c.googleLat, c.googleLng);
   }
-  function gmapsSearch(p) {
-    return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent([p.name, p.area || p.address, 'Pune'].filter(Boolean).join(', '));
-  }
-  function wrongRows(all) {
-    var order = { moved: 0, name_differs: 1, not_found: 2 };
-    return all.filter(function (p) { return WRONG_KIND[googleStatus(p)]; })
-      .map(function (p) { return { p: p, st: googleStatus(p), c: p.googleCheck || {} }; })
-      .sort(function (a, b) { return order[a.st] - order[b.st] || (b.c.distanceM || 0) - (a.c.distanceM || 0); });
+  function gmapsSearch(q) { return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q); }
+  function sheetAddress(p) { return [p.address, p.area].filter(Boolean).join(', '); }
+
+  var sheetFilter = 'problems';
+  function sheetRows(all) {
+    var order = { far: 0, no_business: 1, no_address: 2, match: 3 };
+    return all.filter(function (p) { var st = sheetStatus(p); return st && st !== 'unchecked'; })
+      .map(function (p) { return { p: p, st: sheetStatus(p), c: p.sheetCheck || {} }; })
+      .sort(function (a, b) { return order[a.st] - order[b.st] || (b.c.apartM || 0) - (a.c.apartM || 0); });
   }
 
-  function renderWrongLocations() {
+  /* Every restaurant's sheet address against Google Maps, on one screen: a
+   * map with both positions joined by a line, and a list with both addresses,
+   * how far apart they are, and links that open each in Google Maps. */
+  function renderSheetResults() {
     return API.places('restaurants').then(function (all) {
       state.restaurants = all;
-      var rows = wrongRows(all);
-      var n = googleCounts(all);
-      var movedIds = rows.filter(function (r) { return r.st === 'moved'; }).map(function (r) { return r.p.id; });
+      var rowsAll = sheetRows(all);
+      var n = sheetCounts(all);
+      var FILTERS = [['problems', 'Don\'t match + not on Google (' + (n.far + n.no_business) + ')'], ['far', 'Don\'t match (' + n.far + ')'],
+        ['no_business', 'Not on Google Maps (' + n.no_business + ')'], ['no_address', 'No usable address (' + n.no_address + ')'],
+        ['pinoff', 'Pin is off — sheet and Google agree elsewhere'], ['match', 'Match (' + n.match + ')'], ['all', 'Everything checked (' + rowsAll.length + ')']];
+      var keep = function (r) {
+        if (sheetFilter === 'all') return true;
+        if (sheetFilter === 'problems') return r.st === 'far' || r.st === 'no_business';
+        if (sheetFilter === 'pinoff') return r.st === 'match' && pinOff(r.p);
+        return r.st === sheetFilter;
+      };
+      var rows = rowsAll.filter(keep);
+      var fixIds = rowsAll.filter(function (r) { return r.st === 'match' && pinOff(r.p); }).map(function (r) { return r.p.id; });
+      var SHOW_MAX = 300;
+
       set('<div class="card">'
-        + '<p style="margin:0 0 10px"><button class="btn-outline btn-sm" id="wlBack" style="width:auto">← Restaurants</button></p>'
-        + '<h2>Wrong locations — checked against Google Maps</h2>'
-        + '<p class="muted" style="margin-top:0">' + n.confirmed + ' confirmed · <b>' + n.moved + ' pinned in the wrong place</b> · '
-        + n.name_differs + ' under another name · ' + n.not_found + ' not on Google Maps'
-        + (n.unchecked ? ' · <b>' + n.unchecked + ' not checked yet</b>' : '') + '.</p>'
-        + '<p><button class="btn-' + (n.unchecked ? 'primary' : 'outline') + ' btn-sm" id="wlCheck" style="width:auto">'
+        + '<p style="margin:0 0 10px"><button class="btn-outline btn-sm" id="scBack" style="width:auto">← Restaurants</button></p>'
+        + '<h2>Excel sheet vs Google Maps</h2>'
+        + '<p class="muted" style="margin-top:0">For each restaurant, the <b>address in your Excel sheet</b> is found on Google Maps on its own, '
+        + 'and the <b>restaurant is found on Google Maps by its name</b> on its own. If the two are close, they match. '
+        + '"Close" depends on the address: 250 m for a building, 500 m for a street, 2 km when the sheet only gives an area.</p>'
+        + '<p class="muted"><b>' + n.match + ' match</b> · <b>' + n.far + ' don\'t match</b> · ' + n.no_business + ' not on Google Maps · '
+        + n.no_address + ' no usable address' + (n.unchecked ? ' · <b>' + n.unchecked + ' not checked yet</b>' : '') + '</p>'
+        + '<p><button class="btn-' + (n.unchecked ? 'primary' : 'outline') + ' btn-sm" id="scCheck" style="width:auto">'
         + (n.unchecked ? 'Check the ' + n.unchecked + ' not checked yet' : 'Check every restaurant again') + '</button> '
-        + '<span id="wlCheckMsg" class="tiny"></span></p>'
+        + '<span id="scCheckMsg" class="tiny"></span></p>'
+        + '<div class="bar"><div><select id="scFilter">' + FILTERS.map(function (f) {
+          return '<option value="' + f[0] + '"' + (sheetFilter === f[0] ? ' selected' : '') + '>' + esc(f[1]) + '</option>';
+        }).join('') + '</select></div>'
+        + (fixIds.length ? '<div><button class="btn-primary" id="scFixAll" style="width:auto">Move ' + fixIds.length + ' pin(s) to where the sheet and Google agree</button></div>' : '')
+        + '<div><button class="btn-outline" id="scCsv" style="width:auto">Download all results (Excel/CSV)</button></div></div>'
+        + '<p id="scFixMsg" class="tiny"></p>'
         + '<div class="legend" style="margin:0 0 10px">'
-        + '<span><i style="background:#D7262F"></i>Our pin (wrong)</span>'
-        + '<span><i style="background:#0f7a4a"></i>Where Google Maps has it</span>'
-        + '<span><i style="background:#c98a12"></i>Our pin — Google has another name there / cannot find it</span></div>'
-        + '<div id="wrongMap" style="width:100%;height:460px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
-        + '<div class="bar" style="margin-top:12px">'
-        + (movedIds.length ? '<div><button class="btn-primary" id="wlFixAll" style="width:auto">Move all ' + movedIds.length + ' to Google\'s position</button></div>' : '')
-        + '<div><button class="btn-outline" id="wlCsv" style="width:auto">Download list (Excel/CSV)</button></div>'
-        + '</div><p id="wlMsg" class="tiny"></p>'
+        + '<span><i style="background:#2f6fd6"></i>Address in the Excel sheet</span>'
+        + '<span><i style="background:#0f7a4a"></i>Where Google Maps has the restaurant</span>'
+        + '<span><i style="background:#D7262F;width:6px;height:6px"></i>Pin in use now</span></div>'
+        + '<div id="sheetMap" style="width:100%;height:460px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
         + (rows.length
-          ? '<div style="overflow-x:auto"><table><thead><tr><th>Restaurant</th><th>Problem</th><th>Our pin</th><th>Google Maps</th><th>Apart</th><th></th></tr></thead><tbody>'
-            + rows.map(function (r) {
-              var p = r.p; var c = r.c; var k = WRONG_KIND[r.st];
-              var hasG = isFinite(c.googleLat) && isFinite(c.googleLng);
-              return '<tr data-wl="' + esc(p.id) + '">'
-                + '<td><b>' + esc(p.name) + '</b>' + (p.area ? '<br><span class="tiny">' + esc(p.area) + '</span>' : '')
-                + (p.address ? '<br><span class="tiny">' + esc(p.address) + '</span>' : '') + '</td>'
-                + '<td><span class="pill ' + k[1] + '">' + esc(k[0]) + '</span></td>'
-                + '<td class="tiny"><a href="' + gmapsAt(p.lat, p.lng) + '" target="_blank" rel="noopener">Open in Google Maps</a><br>'
-                + p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + '</td>'
+          ? '<div style="overflow-x:auto;margin-top:12px"><table><thead><tr><th>Restaurant</th><th>Result</th><th>Excel sheet address</th><th>Google Maps</th><th>Apart</th><th>Pin now</th><th></th></tr></thead><tbody>'
+            + rows.slice(0, SHOW_MAX).map(function (r) {
+              var p = r.p; var c = r.c; var k = SHEET_KIND[r.st];
+              var hasA = isFinite(c.addressLat); var hasG = isFinite(c.googleLat);
+              return '<tr data-sc="' + esc(p.id) + '">'
+                + '<td><b>' + esc(p.name) + '</b>' + (p.customerId ? '<br><span class="tiny">' + esc(p.customerId) + '</span>' : '') + '</td>'
+                + '<td><span class="pill ' + k[1] + '">' + esc(k[0]) + '</span>'
+                + (c.nameMatch === 'partial' ? '<br><span class="tiny">Google\'s name differs</span>' : '')
+                + (c.branches > 1 ? '<br><span class="tiny">' + c.branches + ' branches on Google; nearest used</span>' : '') + '</td>'
+                + '<td class="tiny">' + esc(sheetAddress(p) || '—')
+                + (hasA ? '<br><a href="' + gmapsAt(c.addressLat, c.addressLng) + '" target="_blank" rel="noopener">Open in Google Maps</a>'
+                  + ' <span style="opacity:.7">(' + esc(c.addressPrecision || '') + ')</span>' : '') + '</td>'
                 + '<td class="tiny">' + (hasG
                   ? '<a href="' + gmapsPlace(c, p) + '" target="_blank" rel="noopener">' + esc(c.googleName || 'Open in Google Maps') + '</a>'
-                    + (c.googleAddress ? '<br>' + esc(c.googleAddress) : '') + '<br>' + Number(c.googleLat).toFixed(5) + ', ' + Number(c.googleLng).toFixed(5)
-                  : '<a href="' + gmapsSearch(p) + '" target="_blank" rel="noopener">Search Google Maps</a>') + '</td>'
-                + '<td>' + (c.distanceM != null ? (c.distanceM >= 1000 ? (c.distanceM / 1000).toFixed(1) + ' km' : c.distanceM + ' m') : '—') + '</td>'
+                    + (c.googleAddress ? '<br>' + esc(c.googleAddress) : '')
+                  : esc(c.googleGuess ? 'Closest result: ' + c.googleGuess : 'Nothing by this name')
+                    + '<br><a href="' + gmapsSearch(p.name + ', Pune') + '" target="_blank" rel="noopener">Search Google Maps</a>') + '</td>'
+                + '<td>' + (c.apartM != null ? distText(c.apartM) : '—') + '</td>'
+                + '<td class="tiny">' + (hasPin(p)
+                  ? (hasG ? distText(Math.round(distM(p, { lat: c.googleLat, lng: c.googleLng }))) + ' from Google' : '')
+                    + (hasA ? '<br>' + distText(Math.round(distM(p, { lat: c.addressLat, lng: c.addressLng }))) + ' from address' : '')
+                    + '<br><a href="' + gmapsAt(p.lat, p.lng) + '" target="_blank" rel="noopener">Open pin</a>'
+                  : 'no pin') + '</td>'
                 + '<td style="white-space:nowrap">'
-                + '<button class="btn-outline btn-sm" data-wlshow="' + esc(p.id) + '">Show</button> '
-                + (hasG && r.st !== 'not_found' ? '<button class="btn-primary btn-sm" data-wluse="' + esc(p.id) + '">Use Google\'s</button> ' : '')
-                + '<button class="btn-outline btn-sm" data-wlopen="' + esc(p.id) + '">Open</button>'
+                + '<button class="btn-outline btn-sm" data-scshow="' + esc(p.id) + '">Show</button> '
+                + (hasG && pinOff(p) ? '<button class="btn-primary btn-sm" data-scuse="' + esc(p.id) + '">Pin to Google\'s</button> ' : '')
+                + '<button class="btn-outline btn-sm" data-scopen="' + esc(p.id) + '">Open</button>'
                 + '</td></tr>';
             }).join('') + '</tbody></table></div>'
-          : '<p class="muted">Google Maps agrees with every restaurant it has checked.</p>')
+            + (rows.length > SHOW_MAX ? '<p class="tiny">Showing ' + SHOW_MAX + ' of ' + rows.length + '. The download has all of them.</p>' : '')
+          : '<p class="muted" style="margin-top:12px">Nothing in this list.</p>')
         + '</div>');
 
-      on('#wlBack', 'click', function () { state.wrongMap = null; render(); });
-      var h = state.wrongMap = MAPS.create('wrongMap', { zoom: 11 });
+      on('#scBack', 'click', function () { state.sheetMap = null; render(); });
+      on('#scFilter', 'change', function (e) { sheetFilter = e.target.value; renderSheetResults(); });
       var byId = {};
-      rows.forEach(function (r) { byId[r.p.id] = r; });
+      rowsAll.forEach(function (r) { byId[r.p.id] = r; });
+      var h = state.sheetMap = MAPS.create('sheetMap', { zoom: 11 });
       if (h) {
         h.ready(function () {
-          if (state.wrongMap !== h) return;
-          mapProviderNote('wrongMap', h);
+          if (state.sheetMap !== h) return;
+          mapProviderNote('sheetMap', h);
           var pts = [];
-          rows.forEach(function (r) {
+          rows.slice(0, SHOW_MAX).forEach(function (r) {
             var p = r.p; var c = r.c;
-            var hasG = isFinite(c.googleLat) && isFinite(c.googleLng) && r.st !== 'not_found';
-            var ours = { lat: p.lat, lng: p.lng };
-            pts.push(ours);
-            if (hasG) {
-              var g = { lat: Number(c.googleLat), lng: Number(c.googleLng) };
-              pts.push(g);
-              MAPS.line(h, 'wrong', [ours, g], { color: '#8b93a7', width: 2, dashed: true, z: 5 });
-              MAPS.pin(h, 'wrong', g, { dot: 7, color: '#0f7a4a', title: p.name + ' — Google Maps: ' + (c.googleName || '') + (c.googleAddress ? ', ' + c.googleAddress : ''), z: 600 });
-            }
-            MAPS.pin(h, 'wrong', ours, { dot: 7, color: r.st === 'moved' ? '#D7262F' : '#c98a12',
-              title: p.name + ' — our pin' + (c.distanceM != null ? ' (' + c.distanceM + ' m from Google)' : ''), z: 700 });
+            var a = isFinite(c.addressLat) ? { lat: c.addressLat, lng: c.addressLng } : null;
+            var g = isFinite(c.googleLat) ? { lat: c.googleLat, lng: c.googleLng } : null;
+            if (a && g) MAPS.line(h, 'sheet', [a, g], { color: r.st === 'far' ? '#D7262F' : '#8b93a7', width: 2, dashed: true, z: 5 });
+            if (a) { pts.push(a); MAPS.pin(h, 'sheet', a, { dot: 7, color: '#2f6fd6', title: p.name + ' — Excel address: ' + sheetAddress(p), z: 600 }); }
+            if (g) { pts.push(g); MAPS.pin(h, 'sheet', g, { dot: 7, color: '#0f7a4a', title: p.name + ' — Google Maps: ' + (c.googleName || '') + (c.googleAddress ? ', ' + c.googleAddress : ''), z: 650 }); }
+            if (hasPin(p)) MAPS.pin(h, 'sheet', { lat: p.lat, lng: p.lng }, { dot: 4, color: '#D7262F', title: p.name + ' — pin in use', z: 700 });
           });
           MAPS.fit(h, pts);
         });
       }
-      on('[data-wlshow]', 'click', function (e) {
-        var r = byId[e.currentTarget.dataset.wlshow];
+      on('[data-scshow]', 'click', function (e) {
+        var r = byId[e.currentTarget.dataset.scshow];
         if (!r || !h) return;
-        var c = r.c;
-        var pts = [{ lat: r.p.lat, lng: r.p.lng }];
-        if (isFinite(c.googleLat) && r.st !== 'not_found') pts.push({ lat: Number(c.googleLat), lng: Number(c.googleLng) });
+        var c = r.c; var pts = [];
+        if (isFinite(c.addressLat)) pts.push({ lat: c.addressLat, lng: c.addressLng });
+        if (isFinite(c.googleLat)) pts.push({ lat: c.googleLat, lng: c.googleLng });
+        if (hasPin(r.p)) pts.push({ lat: r.p.lat, lng: r.p.lng });
         MAPS.fit(h, pts);
-        document.getElementById('wrongMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        document.getElementById('sheetMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
-      on('[data-wlopen]', 'click', function (e) { var r = byId[e.currentTarget.dataset.wlopen]; if (r) restaurantModal(r.p); });
-      on('[data-wluse]', 'click', function (e) {
-        var b = e.currentTarget; var r = byId[b.dataset.wluse];
-        if (!r || !confirm('Move ' + r.p.name + ' to where Google Maps has it' + (r.c.distanceM != null ? ' (' + r.c.distanceM + ' m away)' : '') + '?\n\nThis moves its geofence. It is recorded in the audit log.')) return;
+      on('[data-scopen]', 'click', function (e) { var r = byId[e.currentTarget.dataset.scopen]; if (r) restaurantModal(r.p); });
+      on('[data-scuse]', 'click', function (e) {
+        var b = e.currentTarget; var r = byId[b.dataset.scuse];
+        if (!r) return;
+        var warn = r.st === 'match' ? '' : '\n\nCareful: the sheet\'s address and Google do NOT agree on this one. Only do this if you know Google is right.';
+        if (!confirm('Move the pin of ' + r.p.name + ' to where Google Maps has it?' + warn + '\n\nThis moves its geofence and is recorded in the audit log.')) return;
         b.disabled = true;
-        API.useGooglePin(r.p.id).then(function () { renderWrongLocations(); }).catch(function (err) { b.disabled = false; alert(err.message); });
+        API.useGooglePin(r.p.id, 'sheet').then(function () { renderSheetResults(); }).catch(function (err) { b.disabled = false; alert(err.message); });
       });
-      on('#wlFixAll', 'click', function () {
-        if (!confirm('Move all ' + movedIds.length + ' restaurants that Google Maps has somewhere else to Google\'s position?\n\n'
-          + 'Only "pinned in the wrong place" ones are moved. "Another name" and "not found" still need a person to look. Every move is recorded in the audit log.')) return;
-        var b = document.getElementById('wlFixAll'); b.disabled = true;
-        var m = document.getElementById('wlMsg'); m.textContent = 'Moving…';
-        API.useGooglePins(movedIds).then(function (out) {
-          m.innerHTML = '<span class="ok-msg">' + out.moved + ' moved.</span>' + (out.skipped ? ' ' + out.skipped + ' skipped (their pin changed since the check).' : '');
-          setTimeout(function () { renderWrongLocations(); }, 900);
+      on('#scFixAll', 'click', function () {
+        if (!confirm('Move ' + fixIds.length + ' pin(s) to Google\'s position?\n\n'
+          + 'Only restaurants where the Excel address and Google Maps agree, and the pin is more than ' + PIN_OFF_M + ' m away from them. '
+          + 'The ones that don\'t match still need a person. Every move is recorded in the audit log.')) return;
+        var b = document.getElementById('scFixAll'); b.disabled = true;
+        var m = document.getElementById('scFixMsg'); m.textContent = 'Moving…';
+        API.useGooglePins(fixIds).then(function (out) {
+          m.innerHTML = '<span class="ok-msg">' + out.moved + ' moved.</span>' + (out.skipped ? ' ' + out.skipped + ' skipped (changed since the check).' : '');
+          setTimeout(function () { renderSheetResults(); }, 900);
         }).catch(function (err) { b.disabled = false; m.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
       });
-      on('#wlCsv', 'click', function () { downloadWrongCsv(rows); });
-      on('#wlCheck', 'click', function () {
+      on('#scCsv', 'click', function () { downloadSheetCsv(all); });
+      on('#scCheck', 'click', function () {
         var again = !n.unchecked;
-        if (again && !confirm('Check every restaurant with Google Maps again?\n\nThis asks Google once per restaurant.')) return;
-        var b = document.getElementById('wlCheck'); b.disabled = true;
-        var m = document.getElementById('wlCheckMsg');
-        var run = again ? true : undefined;
-        var done = 0;
-        var step = function () {
-          return API.googleCheck(run).then(function (r) {
-            if (again) run = r.recheckBefore;
-            done += r.checked;
-            m.textContent = 'Checked ' + done + ' · ' + r.remaining + ' to go…';
-            if (r.stoppedFor) { m.innerHTML = '<span class="err">' + esc(r.stoppedFor) + '</span>'; b.disabled = false; return null; }
-            if (r.remaining > 0 && r.checked > 0 && document.getElementById('wlCheck')) return step();
-            return renderWrongLocations();
-          });
-        };
-        step().catch(function (err) { b.disabled = false; m.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
+        if (again && !confirm('Check every restaurant against Google Maps again?\n\nThis asks Google twice per restaurant.')) return;
+        var b = document.getElementById('scCheck'); b.disabled = true;
+        var m = function (t) { var el = document.getElementById('scCheckMsg'); if (el) el.innerHTML = t; };
+        runSheetCheck(again, m, function () { return renderSheetResults(); }, function () { return !!document.getElementById('scCheck'); })
+          .catch(function (err) { b.disabled = false; m('<span class="err">' + esc(err.message) + '</span>'); });
       });
     });
   }
 
-  function downloadWrongCsv(rows) {
-    var q = function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var head = ['Restaurant', 'Customer ID', 'Area', 'Address', 'Problem', 'Our lat', 'Our lng', 'Our pin on Google Maps',
-      'Google name', 'Google address', 'Google lat', 'Google lng', 'Google Maps link', 'Metres apart'];
-    var lines = [head.join(',')].concat(rows.map(function (r) {
-      var p = r.p; var c = r.c;
-      var hasG = isFinite(c.googleLat) && isFinite(c.googleLng);
-      return [p.name, p.customerId, p.area, p.address, WRONG_KIND[r.st][0], p.lat, p.lng, gmapsAt(p.lat, p.lng),
-        c.googleName, c.googleAddress, hasG ? c.googleLat : '', hasG ? c.googleLng : '',
-        hasG ? gmapsPlace(c, p) : gmapsSearch(p), c.distanceM].map(q).join(',');
-    }));
+  function distM(a, b) {
+    var dLat = (a.lat - b.lat) * 111320;
+    var dLng = (a.lng - b.lng) * 111320 * Math.cos(a.lat * Math.PI / 180);
+    return Math.sqrt(dLat * dLat + dLng * dLng);
+  }
+
+  // Every restaurant, checked or not, so the download is the whole sheet with
+  // Google's answer beside each row.
+  function downloadSheetCsv(all) {
+    var q = function (v) { v = v == null ? '' : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var head = ['Restaurant', 'Customer ID', 'Excel address', 'Excel area', 'Result', 'Detail',
+      'Address found at (lat)', 'Address found at (lng)', 'Address precision', 'Excel address on Google Maps',
+      'Google name', 'Google address', 'Google lat', 'Google lng', 'Restaurant on Google Maps', 'Metres apart',
+      'Pin lat', 'Pin lng', 'Pin to Google (m)', 'Pin to address (m)'];
+    var rows = all.filter(function (p) { return sheetStatus(p); }).map(function (p) {
+      var st = sheetStatus(p); var c = st === 'unchecked' ? {} : (p.sheetCheck || {});
+      var hasA = isFinite(c.addressLat); var hasG = isFinite(c.googleLat);
+      return [p.name, p.customerId, p.address, p.area, st === 'unchecked' ? 'Not checked yet' : SHEET_KIND[st][0], c.detail,
+        hasA ? c.addressLat : '', hasA ? c.addressLng : '', c.addressPrecision, hasA ? gmapsAt(c.addressLat, c.addressLng) : '',
+        c.googleName, c.googleAddress, hasG ? c.googleLat : '', hasG ? c.googleLng : '', hasG ? gmapsPlace(c, p) : gmapsSearch(p.name + ', Pune'),
+        c.apartM, hasPin(p) ? p.lat : '', hasPin(p) ? p.lng : '',
+        hasPin(p) && hasG ? Math.round(distM(p, { lat: c.googleLat, lng: c.googleLng })) : '',
+        hasPin(p) && hasA ? Math.round(distM(p, { lat: c.addressLat, lng: c.addressLng })) : ''].map(q).join(',');
+    });
     // The BOM makes Excel read the names as UTF-8.
-    var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var blob = new Blob(['﻿' + [head.join(',')].concat(rows).join('\r\n')], { type: 'text/csv;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
-    a.href = url; a.download = 'wrong-restaurant-locations.csv';
+    a.href = url; a.download = 'excel-vs-google-maps.csv';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
@@ -1149,13 +1214,14 @@ window.DRIVERS_VIEWS = (function () {
         + metric(needPin, 'No location yet', needPin ? 'warn' : 'ok')
         + (trucks ? metric(trucks, 'Food trucks · no fixed address') : '')
         + '</div>'
-        + googleCheckPanel(all)
+        + sheetPanel(all)
         + '<div class="bar">'
         + '<div style="flex:1;min-width:240px"><input id="rSearch" placeholder="Search name, area, address or customer ID" value="' + esc(restFilter.q) + '"></div>'
         + '<div><select id="rShow">'
         + [['all', 'All'], ['hold', 'Supply on hold'], ['supplying', 'Supplying'],
           ['nopin', 'No location yet'], ['check', 'Placed under a different name'],
-          ['google_problem', 'Google Maps disagrees'], ['google_unchecked', 'Not checked with Google Maps'],
+          ['sheet_problem', 'Excel address doesn\'t match Google'], ['sheet_nobiz', 'Not on Google Maps'],
+          ['sheet_unchecked', 'Not checked against Google yet'],
           ['mobile', 'Food trucks / mobile']]
           .map(function (o) {
             return '<option value="' + o[0] + '"' + (restFilter.show === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
@@ -1170,7 +1236,7 @@ window.DRIVERS_VIEWS = (function () {
 
       fillRestaurants();
       bindHoldButtons();
-      bindGoogleCheck();
+      bindSheetCheck();
       on('#rSearch', 'input', function (e) {
         restFilter.q = e.target.value; restFilter.shown = 200; fillRestaurants();
       });
@@ -1187,11 +1253,9 @@ window.DRIVERS_VIEWS = (function () {
     if (restFilter.show === 'mobile') return isMobilePlace(p);
     if (restFilter.show === 'hold') return p.supplyHold === true;
     if (restFilter.show === 'check') return p.locationSource === 'places_name_differs';
-    if (restFilter.show === 'google_problem') {
-      var st = googleStatus(p);
-      return st === 'moved' || st === 'name_differs' || st === 'not_found';
-    }
-    if (restFilter.show === 'google_unchecked') return googleStatus(p) === 'unchecked';
+    if (restFilter.show === 'sheet_problem') return sheetStatus(p) === 'far';
+    if (restFilter.show === 'sheet_nobiz') return sheetStatus(p) === 'no_business';
+    if (restFilter.show === 'sheet_unchecked') return sheetStatus(p) === 'unchecked';
     // A truck has no address, so it does not belong in a list of places that
     // are missing one — it would sit there forever looking like outstanding
     // work nobody can finish. It stays reachable from its own filter, and
@@ -1209,34 +1273,7 @@ window.DRIVERS_VIEWS = (function () {
     return !!p && (p.mobile === true || p.locationStatus === 'mobile');
   }
 
-  /* What Google Maps says about a restaurant's pin. See
-   * backend/src/services/googleCheck.js for the four verdicts. */
-  function googleStatus(p) {
-    if (!hasPin(p) || isMobilePlace(p) || p.active === false) return null;
-    var c = p.googleCheck;
-    if (!c || !c.status) return 'unchecked';
-    // A check made against a pin that has since been moved says nothing about
-    // the pin now.
-    if (c.pinLat !== p.lat || c.pinLng !== p.lng) return 'unchecked';
-    return c.status;
-  }
-  function googlePill(p) {
-    var st = googleStatus(p);
-    var c = p.googleCheck || {};
-    if (!st) return '';
-    return '<br>' + ({
-      confirmed: '<span class="pill ok">Google Maps ✓</span>',
-      moved: '<span class="pill bad">Google: ' + (c.distanceM != null ? c.distanceM + ' m away' : 'elsewhere') + '</span>',
-      name_differs: '<span class="pill warn">Google name differs</span>',
-      not_found: '<span class="pill warn">not on Google Maps</span>',
-      unchecked: '<span class="pill idle">not checked</span>',
-    })[st];
-  }
-  function googleCounts(list) {
-    var n = { confirmed: 0, moved: 0, name_differs: 0, not_found: 0, unchecked: 0 };
-    list.forEach(function (p) { var st = googleStatus(p); if (st) n[st] += 1; });
-    return n;
-  }
+
 
   function fillRestaurants() {
     var all = (state.restaurants || []).filter(restaurantMatches);
@@ -1258,7 +1295,7 @@ window.DRIVERS_VIEWS = (function () {
         + '<td class="tiny">' + (isMobilePlace(p)
           ? '<span class="pill idle">food truck</span>'
           : hasPin(p)
-            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + googlePill(p)
+            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + sheetPill(p)
             : '<span class="pill warn">none yet</span>') + '</td>'
         + '<td class="tiny">' + (p.radiusM ? p.radiusM + ' m' : 'default') + '</td>'
         + '<td style="white-space:nowrap">'
@@ -1649,7 +1686,7 @@ window.DRIVERS_VIEWS = (function () {
           + '" target="_blank" rel="noopener">see the pin on Google Maps</a>'
         : 'No location yet, so it is not counted in any driver\'s kilometres.')
       + '</div>'
-      + googleSection(place)
+      + sheetSection(place)
 
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
       + (held
@@ -1657,7 +1694,7 @@ window.DRIVERS_VIEWS = (function () {
         : '<button class="btn-danger" id="rmHold" style="width:auto">Stop supply</button>')
       + '<button class="btn-outline" id="rmMobile" style="width:auto">'
       + (truck ? 'Not a food truck' : 'Mark as a food truck') + '</button>'
-      + (!truck && (googleStatus(place) === 'moved' || googleStatus(place) === 'name_differs')
+      + (!truck && isFinite((place.sheetCheck || {}).googleLat) && sheetStatus(place) !== 'unchecked' && pinOff(place)
         ? '<button class="btn-primary" id="rmUseGoogle" style="width:auto">Use Google Maps\' position</button>' : '')
       + (truck ? ''
         : hasPin(place)
@@ -1709,37 +1746,31 @@ window.DRIVERS_VIEWS = (function () {
     on('#rmPlace', 'click', reposition, root);
 
     on('#rmUseGoogle', 'click', function () {
-      var c = place.googleCheck || {};
+      var c = place.sheetCheck || {};
       if (!confirm('Move ' + place.name + '\'s pin to where Google Maps has it'
         + (c.googleName ? ' ("' + c.googleName + '")' : '') + '?'
-        + (c.distanceM != null ? '\n\nThat is ' + c.distanceM + ' m from where it is now.' : '')
+        + (hasPin(place) ? '\n\nThat is ' + distText(Math.round(distM(place, { lat: c.googleLat, lng: c.googleLng }))) + ' from where it is now.' : '')
+        + (sheetStatus(place) !== 'match' ? '\n\nCareful: the Excel address and Google do not agree on this one.' : '')
         + '\n\nIts geofence moves with it, which changes which drives count as visits here from now on.')) return;
       document.getElementById('rmMsg').textContent = 'Saving…';
-      API.useGooglePin(place.id)
+      API.useGooglePin(place.id, 'sheet')
         .then(function () { closeModal(); render(); })
         .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
     }, root);
   }
 
-  function googleSection(place) {
-    var st = googleStatus(place);
+  function sheetSection(place) {
+    var st = sheetStatus(place);
     if (!st) return '';
-    var c = place.googleCheck || {};
     if (st === 'unchecked') {
-      return '<div class="evidence"><b>Google Maps</b><br>Not checked yet. Use "Check with Google Maps" on the Restaurants tab.</div>';
+      return '<div class="evidence"><b>Excel sheet vs Google Maps</b><br>Not checked yet. Use "Check against Google Maps" on the Restaurants tab.</div>';
     }
-    var title = ({
-      confirmed: 'Confirmed by Google Maps',
-      moved: 'Google Maps has it somewhere else',
-      name_differs: 'Google Maps has another name here',
-      not_found: 'Not found on Google Maps',
-    })[st];
-    return '<div class="evidence"><b>' + esc(title) + '</b><br>' + esc(c.detail || '')
-      + (c.googleAddress ? '<br><span class="tiny">' + esc(c.googleAddress) + '</span>' : '')
-      + (Number.isFinite(c.googleLat) && st !== 'confirmed'
-        ? '<br><a href="https://www.google.com/maps/search/?api=1&query=' + c.googleLat + ',' + c.googleLng
-          + (c.googlePlaceId ? '&query_place_id=' + encodeURIComponent(c.googlePlaceId) : '')
-          + '" target="_blank" rel="noopener">see Google\'s position</a>' : '')
+    var c = place.sheetCheck || {};
+    return '<div class="evidence"><b>Excel sheet vs Google Maps: ' + esc(SHEET_KIND[st][0]) + '</b><br>' + esc(c.detail || '')
+      + (sheetAddress(place) ? '<br><span class="tiny">Sheet: ' + esc(sheetAddress(place)) + '</span>'
+        + (isFinite(c.addressLat) ? ' · <a href="' + gmapsAt(c.addressLat, c.addressLng) + '" target="_blank" rel="noopener">open</a>' : '') : '')
+      + (isFinite(c.googleLat) ? '<br><span class="tiny">Google: ' + esc([c.googleName, c.googleAddress].filter(Boolean).join(', ')) + '</span>'
+        + ' · <a href="' + gmapsPlace(c, place) + '" target="_blank" rel="noopener">open</a>' : '')
       + '<br><span class="tiny">Checked ' + dateTime(c.at) + '</span></div>';
   }
 
