@@ -136,6 +136,7 @@ window.DRIVERS_VIEWS = (function () {
         + metric(m.openAlerts, 'Open alerts', m.openAlerts ? 'warn' : '')
         + metric(m.unprocessedRides, 'Rides not calculated', m.unprocessedRides ? 'warn' : '')
         + '</div>'
+        + (d.depot && d.depot.warning ? '<div class="banner">' + esc(d.depot.warning) + '</div>' : '')
         + (m.unprocessedRides
           ? '<div class="banner">' + m.unprocessedRides + ' finished ride(s) today have not been calculated yet, so their kilometres are not in the totals above. They are processed automatically, or you can run it now from Settings.</div>'
           : '')

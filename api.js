@@ -65,6 +65,10 @@ window.DRIVERS_API = (function () {
         // An expired or revoked token should land the operator back at the
         // sign-in screen rather than showing a wall of failed panels.
         if (res.status === 401 && window.DRIVERS_SIGNOUT) window.DRIVERS_SIGNOUT();
+        // The server refuses everything but a password change until the
+        // set-up password is replaced; show the dialog rather than errors.
+        if (res.status === 403 && json.code === 'PASSWORD_CHANGE_REQUIRED' && window.DRIVERS_PASSWORD_DIALOG
+          && !document.getElementById('pwSave')) window.DRIVERS_PASSWORD_DIALOG(true);
         if (!res.ok || json.success === false) {
           var err = new Error(json.message || ('Request failed (' + res.status + ')'));
           err.status = res.status;
