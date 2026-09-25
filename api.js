@@ -137,6 +137,9 @@ window.DRIVERS_API = (function () {
       var body = run === true ? { recheck: true } : typeof run === 'number' ? { recheckBefore: run } : {};
       return request(D + '/restaurants/google-check', { method: 'POST', body: body });
     },
+    useGooglePins: function (ids) {
+      return request(D + '/restaurants/use-google-pins', { method: 'POST', body: { ids: ids } });
+    },
     useGooglePin: function (id) {
       return request(D + '/restaurants/' + id + '/use-google-pin', { method: 'POST', body: {} });
     },

@@ -90,7 +90,7 @@ window.DRIVERS_VIEWS = (function () {
     // Every map object belongs to a DOM node that is about to be replaced.
     // Keeping a reference would leave the next render talking to a container
     // that is no longer on the page.
-    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null;
+    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null; state.wrongMap = null;
     renderTabs();
     render();
   }
@@ -594,6 +594,7 @@ window.DRIVERS_VIEWS = (function () {
     });
 
     h.ready(function () {
+      mapProviderNote('replayMap', h);
       MAPS.drawPlaces(h, 'near', near, '#e8a3a6', function (id) { if (byId[id]) restaurantModal(byId[id]); });
       var play = MAPS.drawReplay(h, rp, { visits: visits });
       if (!play || !play.count) {
@@ -917,7 +918,8 @@ window.DRIVERS_VIEWS = (function () {
       + (n.unchecked
         ? '<button class="btn-primary btn-sm" id="gcRun" style="width:auto">Check ' + n.unchecked + ' with Google Maps</button>'
         : '<button class="btn-outline btn-sm" id="gcRerun" style="width:auto">Check all again</button>')
-      + (problems ? '<button class="btn-outline btn-sm" id="gcShow" style="width:auto">Show the ' + problems + ' to look at</button>' : '')
+      + (problems ? '<button class="btn-primary btn-sm" id="gcWrong" style="width:auto">Wrong locations on the map (' + problems + ')</button>'
+        + '<button class="btn-outline btn-sm" id="gcShow" style="width:auto">Filter the list</button>' : '')
       + '</div>';
   }
 
@@ -952,11 +954,180 @@ window.DRIVERS_VIEWS = (function () {
       if (!confirm('Check every restaurant with Google Maps again?\n\nThis asks Google once per restaurant.')) return;
       run(true);
     });
+    on('#gcWrong', 'click', function () { renderWrongLocations().catch(function (e) { set(errBox(e)); }); });
     on('#gcShow', 'click', function () {
       restFilter.show = 'google_problem'; restFilter.shown = 200;
       var sel = document.getElementById('rShow'); if (sel) sel.value = 'google_problem';
       fillRestaurants(); bindHoldButtons();
     });
+  }
+
+  /* Every restaurant Google Maps disagrees with, on one screen: where our pin
+   * is, where Google has the business, how far apart, with links that open
+   * each position in Google Maps, and the fix one tap away. */
+  var WRONG_KIND = {
+    moved: ['Pinned in the wrong place', 'bad'],
+    name_differs: ['Another name at the pin', 'warn'],
+    not_found: ['Not found on Google Maps', 'warn'],
+  };
+  function gmapsAt(lat, lng) { return 'https://www.google.com/maps/search/?api=1&query=' + lat + ',' + lng; }
+  function gmapsPlace(c, p) {
+    return c.googlePlaceId
+      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(c.googleName || p.name) + '&query_place_id=' + encodeURIComponent(c.googlePlaceId)
+      : gmapsAt(c.googleLat, c.googleLng);
+  }
+  function gmapsSearch(p) {
+    return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent([p.name, p.area || p.address, 'Pune'].filter(Boolean).join(', '));
+  }
+  function wrongRows(all) {
+    var order = { moved: 0, name_differs: 1, not_found: 2 };
+    return all.filter(function (p) { return WRONG_KIND[googleStatus(p)]; })
+      .map(function (p) { return { p: p, st: googleStatus(p), c: p.googleCheck || {} }; })
+      .sort(function (a, b) { return order[a.st] - order[b.st] || (b.c.distanceM || 0) - (a.c.distanceM || 0); });
+  }
+
+  function renderWrongLocations() {
+    return API.places('restaurants').then(function (all) {
+      state.restaurants = all;
+      var rows = wrongRows(all);
+      var n = googleCounts(all);
+      var movedIds = rows.filter(function (r) { return r.st === 'moved'; }).map(function (r) { return r.p.id; });
+      set('<div class="card">'
+        + '<p style="margin:0 0 10px"><button class="btn-outline btn-sm" id="wlBack" style="width:auto">← Restaurants</button></p>'
+        + '<h2>Wrong locations — checked against Google Maps</h2>'
+        + '<p class="muted" style="margin-top:0">' + n.confirmed + ' confirmed · <b>' + n.moved + ' pinned in the wrong place</b> · '
+        + n.name_differs + ' under another name · ' + n.not_found + ' not on Google Maps'
+        + (n.unchecked ? ' · <b>' + n.unchecked + ' not checked yet</b>' : '') + '.</p>'
+        + '<p><button class="btn-' + (n.unchecked ? 'primary' : 'outline') + ' btn-sm" id="wlCheck" style="width:auto">'
+        + (n.unchecked ? 'Check the ' + n.unchecked + ' not checked yet' : 'Check every restaurant again') + '</button> '
+        + '<span id="wlCheckMsg" class="tiny"></span></p>'
+        + '<div class="legend" style="margin:0 0 10px">'
+        + '<span><i style="background:#D7262F"></i>Our pin (wrong)</span>'
+        + '<span><i style="background:#0f7a4a"></i>Where Google Maps has it</span>'
+        + '<span><i style="background:#c98a12"></i>Our pin — Google has another name there / cannot find it</span></div>'
+        + '<div id="wrongMap" style="width:100%;height:460px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
+        + '<div class="bar" style="margin-top:12px">'
+        + (movedIds.length ? '<div><button class="btn-primary" id="wlFixAll" style="width:auto">Move all ' + movedIds.length + ' to Google\'s position</button></div>' : '')
+        + '<div><button class="btn-outline" id="wlCsv" style="width:auto">Download list (Excel/CSV)</button></div>'
+        + '</div><p id="wlMsg" class="tiny"></p>'
+        + (rows.length
+          ? '<div style="overflow-x:auto"><table><thead><tr><th>Restaurant</th><th>Problem</th><th>Our pin</th><th>Google Maps</th><th>Apart</th><th></th></tr></thead><tbody>'
+            + rows.map(function (r) {
+              var p = r.p; var c = r.c; var k = WRONG_KIND[r.st];
+              var hasG = isFinite(c.googleLat) && isFinite(c.googleLng);
+              return '<tr data-wl="' + esc(p.id) + '">'
+                + '<td><b>' + esc(p.name) + '</b>' + (p.area ? '<br><span class="tiny">' + esc(p.area) + '</span>' : '')
+                + (p.address ? '<br><span class="tiny">' + esc(p.address) + '</span>' : '') + '</td>'
+                + '<td><span class="pill ' + k[1] + '">' + esc(k[0]) + '</span></td>'
+                + '<td class="tiny"><a href="' + gmapsAt(p.lat, p.lng) + '" target="_blank" rel="noopener">Open in Google Maps</a><br>'
+                + p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + '</td>'
+                + '<td class="tiny">' + (hasG
+                  ? '<a href="' + gmapsPlace(c, p) + '" target="_blank" rel="noopener">' + esc(c.googleName || 'Open in Google Maps') + '</a>'
+                    + (c.googleAddress ? '<br>' + esc(c.googleAddress) : '') + '<br>' + Number(c.googleLat).toFixed(5) + ', ' + Number(c.googleLng).toFixed(5)
+                  : '<a href="' + gmapsSearch(p) + '" target="_blank" rel="noopener">Search Google Maps</a>') + '</td>'
+                + '<td>' + (c.distanceM != null ? (c.distanceM >= 1000 ? (c.distanceM / 1000).toFixed(1) + ' km' : c.distanceM + ' m') : '—') + '</td>'
+                + '<td style="white-space:nowrap">'
+                + '<button class="btn-outline btn-sm" data-wlshow="' + esc(p.id) + '">Show</button> '
+                + (hasG && r.st !== 'not_found' ? '<button class="btn-primary btn-sm" data-wluse="' + esc(p.id) + '">Use Google\'s</button> ' : '')
+                + '<button class="btn-outline btn-sm" data-wlopen="' + esc(p.id) + '">Open</button>'
+                + '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<p class="muted">Google Maps agrees with every restaurant it has checked.</p>')
+        + '</div>');
+
+      on('#wlBack', 'click', function () { state.wrongMap = null; render(); });
+      var h = state.wrongMap = MAPS.create('wrongMap', { zoom: 11 });
+      var byId = {};
+      rows.forEach(function (r) { byId[r.p.id] = r; });
+      if (h) {
+        h.ready(function () {
+          if (state.wrongMap !== h) return;
+          mapProviderNote('wrongMap', h);
+          var pts = [];
+          rows.forEach(function (r) {
+            var p = r.p; var c = r.c;
+            var hasG = isFinite(c.googleLat) && isFinite(c.googleLng) && r.st !== 'not_found';
+            var ours = { lat: p.lat, lng: p.lng };
+            pts.push(ours);
+            if (hasG) {
+              var g = { lat: Number(c.googleLat), lng: Number(c.googleLng) };
+              pts.push(g);
+              MAPS.line(h, 'wrong', [ours, g], { color: '#8b93a7', width: 2, dashed: true, z: 5 });
+              MAPS.pin(h, 'wrong', g, { dot: 7, color: '#0f7a4a', title: p.name + ' — Google Maps: ' + (c.googleName || '') + (c.googleAddress ? ', ' + c.googleAddress : ''), z: 600 });
+            }
+            MAPS.pin(h, 'wrong', ours, { dot: 7, color: r.st === 'moved' ? '#D7262F' : '#c98a12',
+              title: p.name + ' — our pin' + (c.distanceM != null ? ' (' + c.distanceM + ' m from Google)' : ''), z: 700 });
+          });
+          MAPS.fit(h, pts);
+        });
+      }
+      on('[data-wlshow]', 'click', function (e) {
+        var r = byId[e.currentTarget.dataset.wlshow];
+        if (!r || !h) return;
+        var c = r.c;
+        var pts = [{ lat: r.p.lat, lng: r.p.lng }];
+        if (isFinite(c.googleLat) && r.st !== 'not_found') pts.push({ lat: Number(c.googleLat), lng: Number(c.googleLng) });
+        MAPS.fit(h, pts);
+        document.getElementById('wrongMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      on('[data-wlopen]', 'click', function (e) { var r = byId[e.currentTarget.dataset.wlopen]; if (r) restaurantModal(r.p); });
+      on('[data-wluse]', 'click', function (e) {
+        var b = e.currentTarget; var r = byId[b.dataset.wluse];
+        if (!r || !confirm('Move ' + r.p.name + ' to where Google Maps has it' + (r.c.distanceM != null ? ' (' + r.c.distanceM + ' m away)' : '') + '?\n\nThis moves its geofence. It is recorded in the audit log.')) return;
+        b.disabled = true;
+        API.useGooglePin(r.p.id).then(function () { renderWrongLocations(); }).catch(function (err) { b.disabled = false; alert(err.message); });
+      });
+      on('#wlFixAll', 'click', function () {
+        if (!confirm('Move all ' + movedIds.length + ' restaurants that Google Maps has somewhere else to Google\'s position?\n\n'
+          + 'Only "pinned in the wrong place" ones are moved. "Another name" and "not found" still need a person to look. Every move is recorded in the audit log.')) return;
+        var b = document.getElementById('wlFixAll'); b.disabled = true;
+        var m = document.getElementById('wlMsg'); m.textContent = 'Moving…';
+        API.useGooglePins(movedIds).then(function (out) {
+          m.innerHTML = '<span class="ok-msg">' + out.moved + ' moved.</span>' + (out.skipped ? ' ' + out.skipped + ' skipped (their pin changed since the check).' : '');
+          setTimeout(function () { renderWrongLocations(); }, 900);
+        }).catch(function (err) { b.disabled = false; m.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
+      });
+      on('#wlCsv', 'click', function () { downloadWrongCsv(rows); });
+      on('#wlCheck', 'click', function () {
+        var again = !n.unchecked;
+        if (again && !confirm('Check every restaurant with Google Maps again?\n\nThis asks Google once per restaurant.')) return;
+        var b = document.getElementById('wlCheck'); b.disabled = true;
+        var m = document.getElementById('wlCheckMsg');
+        var run = again ? true : undefined;
+        var done = 0;
+        var step = function () {
+          return API.googleCheck(run).then(function (r) {
+            if (again) run = r.recheckBefore;
+            done += r.checked;
+            m.textContent = 'Checked ' + done + ' · ' + r.remaining + ' to go…';
+            if (r.stoppedFor) { m.innerHTML = '<span class="err">' + esc(r.stoppedFor) + '</span>'; b.disabled = false; return null; }
+            if (r.remaining > 0 && r.checked > 0 && document.getElementById('wlCheck')) return step();
+            return renderWrongLocations();
+          });
+        };
+        step().catch(function (err) { b.disabled = false; m.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
+      });
+    });
+  }
+
+  function downloadWrongCsv(rows) {
+    var q = function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var head = ['Restaurant', 'Customer ID', 'Area', 'Address', 'Problem', 'Our lat', 'Our lng', 'Our pin on Google Maps',
+      'Google name', 'Google address', 'Google lat', 'Google lng', 'Google Maps link', 'Metres apart'];
+    var lines = [head.join(',')].concat(rows.map(function (r) {
+      var p = r.p; var c = r.c;
+      var hasG = isFinite(c.googleLat) && isFinite(c.googleLng);
+      return [p.name, p.customerId, p.area, p.address, WRONG_KIND[r.st][0], p.lat, p.lng, gmapsAt(p.lat, p.lng),
+        c.googleName, c.googleAddress, hasG ? c.googleLat : '', hasG ? c.googleLng : '',
+        hasG ? gmapsPlace(c, p) : gmapsSearch(p), c.distanceM].map(q).join(',');
+    }));
+    // The BOM makes Excel read the names as UTF-8.
+    var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'wrong-restaurant-locations.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
   function renderRestaurants() {
@@ -1771,7 +1942,7 @@ window.DRIVERS_VIEWS = (function () {
         }
         show();
       }
-      m.ready(function () { if (start) place(start, false); });
+      m.ready(function () { mapProviderNote('pickMap', m); if (start) place(start, false); });
       m.onClick(function (p) { place(p, true); });
 
       // Jumping to an area by name: Google Maps search when Google Maps is in
@@ -2286,6 +2457,7 @@ window.DRIVERS_VIEWS = (function () {
 
         map.ready(function () {
           if (state.tracksMap !== map) return;
+          mapProviderNote('tracksMap', map);
           MAPS.drawTracks(map, 'tracks', tracks);
           API.places('restaurants').then(function (rs) {
             MAPS.drawPlaces(map, 'tracks-places',
@@ -2590,13 +2762,20 @@ window.DRIVERS_VIEWS = (function () {
       var status = r[0];
       var set_ = status && status.maps_browser === 'configured';
       var running = MAPS.provider();
-      var refused = MAPS.keyRefused();
+      var st = MAPS.status();
+      var bad = set_ && running !== 'google';
       host.innerHTML = '<h2>Google Maps '
-        + (set_ ? (refused ? '<span class="pill bad">key refused</span>' : running === 'google' ? '<span class="pill ok">in use</span>' : '<span class="pill warn">saved, not loading</span>')
-          : '<span class="pill idle">free maps in use</span>') + '</h2>'
+        + (running === 'google' ? '<span class="pill ok">in use</span>'
+          : st.state === 'refused' ? '<span class="pill bad">key refused</span>'
+            : set_ ? '<span class="pill warn">saved, not loading</span>'
+              : '<span class="pill idle">free maps in use</span>') + '</h2>'
         + '<p class="muted" style="margin-top:0">Every map here and in the driver app uses Google Maps once a browser key is saved; '
         + 'until then, and if Google ever refuses the key, they fall back to the free maps so no screen goes blank.</p>'
-        + (refused ? '<div class="banner">Google refused the saved key. Check the website restrictions below and that the Maps JavaScript API is enabled for it.</div>' : '')
+        + (bad || (!set_ && status === null)
+          ? '<div class="banner"><b>Why it is not Google Maps:</b> ' + esc(st.detail)
+            + (st.code ? '<br><span class="tiny">Google\'s error code: <b>' + esc(st.code) + '</b></span>' : '')
+            + '<br><button class="btn-outline btn-sm" id="btnMapsRetry" style="width:auto;margin-top:8px">I fixed it — try Google Maps again</button></div>'
+          : '')
         + '<details' + (set_ ? '' : ' open') + '><summary class="disclose">How to make the key</summary><ol class="muted" style="margin:10px 0 0 18px;padding:0">'
         + '<li>Google Cloud console, project <b>modern-drivers-pune</b> → <b>APIs &amp; Services → Library</b>: enable <b>Maps JavaScript API</b> and <b>Places API (New)</b>.</li>'
         + '<li><b>Credentials → Create credentials → API key</b>.</li>'
@@ -2607,6 +2786,7 @@ window.DRIVERS_VIEWS = (function () {
         + '<input id="mapsKey" type="password" autocomplete="off" placeholder="AIza…" style="max-width:420px">'
         + '<button class="btn-outline btn-sm" id="btnMapsKey">' + (set_ ? 'Replace key' : 'Save key') + '</button>'
         + '</div><p id="mapsKeyMsg" class="tiny" style="margin-top:8px"></p>';
+      on('#btnMapsRetry', 'click', function () { MAPS.retry(); }, host);
       on('#btnMapsKey', 'click', function () {
         var v = (document.getElementById('mapsKey').value || '').trim();
         var m = document.getElementById('mapsKeyMsg');
@@ -2621,17 +2801,27 @@ window.DRIVERS_VIEWS = (function () {
     });
   }
 
-  /* Under a map: say when Google refused the key, so a free map is not
-   * mistaken for the Google one the office paid for. */
+  /* Under a map on the free tiles: say why it is not Google Maps, in words
+   * the office can act on, so a free map is never mistaken for the Google one. */
   function mapProviderNote(containerId, h) {
-    if (!h || h.provider !== 'free' || !MAPS.keyRefused()) return;
     var el = document.getElementById(containerId);
-    if (!el || el.nextElementSibling && el.nextElementSibling.classList.contains('map-note')) return;
-    var n = document.createElement('p');
-    n.className = 'tiny map-note err';
-    n.textContent = 'Google Maps refused the saved key, so the free maps are shown. See Settings → Google Maps.';
-    el.parentNode.insertBefore(n, el.nextSibling);
+    if (!el || !h) return;
+    var n = el.parentNode.querySelector('.map-note[data-for="' + containerId + '"]');
+    var st = MAPS.status();
+    if (h.provider !== 'free' || st.state === 'loading') { if (n) n.remove(); return; }
+    if (!n) {
+      n = document.createElement('p');
+      n.className = 'tiny map-note';
+      n.setAttribute('data-for', containerId);
+      el.parentNode.insertBefore(n, el.nextSibling);
+    }
+    n.innerHTML = '<b>Free map, not Google Maps:</b> ' + esc(st.detail)
+      + (st.code ? ' <span style="opacity:.7">(' + esc(st.code) + ')</span>' : '')
+      + ' <a href="#" data-go-settings>Settings → Google Maps</a>';
+    var a = n.querySelector('[data-go-settings]');
+    if (a) a.addEventListener('click', function (e) { e.preventDefault(); go('settings'); });
   }
+
 
   function stopNamesCard() {
     var host = document.createElement('div');
@@ -2772,6 +2962,9 @@ window.DRIVERS_VIEWS = (function () {
 
   // Google refused the key after a map was drawn: draw the screen again on
   // the free maps. An open ride replay is closed rather than left grey.
+  window.addEventListener('md-maps-status', function () {
+    if (state.map) mapProviderNote('map', state.map);
+  });
   window.addEventListener('md-maps-fallback', function () {
     state.map = null; state.markers = {}; state.tracksMap = null;
     if (document.getElementById('replayMap')) closeModal();

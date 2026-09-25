@@ -31,6 +31,44 @@ window.DRIVERS_MAP = (function () {
   var provider = null;          // 'google' | 'free'
   var providerReady = null;     // Promise<'google'|'free'>
   var authFailed = false;
+  // Why the maps are what they are, in words the office can act on. Shown in
+  // Settings and under every map that fell back to the free maps.
+  var status = { state: 'loading', code: null, detail: '' };
+
+  // Google's own error codes (printed to the console when it refuses a key),
+  // and what to do about each in the Google Cloud console.
+  var GOOGLE_ERRORS = {
+    RefererNotAllowedMapError: 'This website is not allowed on the key. In the key\'s Website restrictions add https://veerbhagtani.github.io/* (and https://localhost/* for the driver app), then Save and wait 5 minutes.',
+    ApiNotActivatedMapError: 'Maps JavaScript API is not turned on for this project. Enable it in APIs & Services → Library.',
+    ApiTargetBlockedMapError: 'The key\'s API restrictions leave out Maps JavaScript API. Tick it (and Places API (New)) under API restrictions and Save.',
+    BillingNotEnabledMapError: 'Billing is not turned on for the project. Link a billing account (the free monthly amount still applies).',
+    InvalidKeyMapError: 'Google does not recognise this key. Copy it again from Credentials and save it here.',
+    MissingKeyMapError: 'No key reached Google. Save the key here again.',
+    ExpiredKeyMapError: 'This key has expired or was deleted. Create a new key and save it here.',
+    DeletedApiProjectMapError: 'The key belongs to a deleted project. Create a key in modern-drivers-pune.',
+    OverQuotaMapError: 'The key has hit its daily limit. Raise the quota or wait until tomorrow.',
+  };
+  function explain(code) { return GOOGLE_ERRORS[code] || 'Google refused the key. Check its restrictions in Credentials.'; }
+
+  // Google reports the reason only on the console. Listen for it while Google
+  // Maps is in use, so the reason can be shown on the page.
+  var errorHooked = false;
+  function hookGoogleErrors() {
+    if (errorHooked || !window.console) return;
+    errorHooked = true;
+    var orig = console.error;
+    console.error = function () {
+      try {
+        var text = Array.prototype.join.call(arguments, ' ');
+        var m = /Google Maps JavaScript API (?:error|warning): (\w+)/.exec(text);
+        if (m && /Error$/.test(m[1])) {
+          status = { state: 'refused', code: m[1], detail: explain(m[1]) };
+          window.dispatchEvent(new Event('md-maps-status'));
+        }
+      } catch (e) { /* never break logging */ }
+      return orig.apply(console, arguments);
+    };
+  }
 
   /* Decided once per page: ask the server for the browser key and, if there is
    * one, load Google Maps. Any failure falls back to the free maps rather than
@@ -38,39 +76,60 @@ window.DRIVERS_MAP = (function () {
   function init() {
     if (providerReady) return providerReady;
     var api = window.DRIVERS_API;
-    providerReady = (api && api.mapsConfig ? api.mapsConfig() : Promise.resolve({ provider: 'free' }))
-      .catch(function () { return { provider: 'free' }; })
+    providerReady = (api && api.mapsConfig ? api.mapsConfig() : Promise.reject(new Error('not signed in')))
       .then(function (cfg) {
-        if (!(cfg && cfg.provider === 'google' && cfg.key)) return 'free';
-        // A key Google already refused in this browser session is not tried
-        // again on every screen: the free maps until the key is replaced.
-        if (refusedKey() === cfg.key) { authFailed = true; return 'free'; }
-        return loadGoogle(cfg.key).then(function () { return 'google'; });
-      })
-      .catch(function (e) {
-        console.warn('Google Maps did not load; using the free maps.', e);
+        if (!(cfg && cfg.provider === 'google' && cfg.key)) {
+          status = { state: 'no_key', code: null, detail: 'No Google Maps key is saved yet. Paste one in Settings → Google Maps.' };
+          return 'free';
+        }
+        // A key Google refused a moment ago is not tried again on every screen,
+        // but only for a couple of minutes: fixing the key in the Google console
+        // must not need a new browser tab to take effect.
+        var r = refused();
+        if (r && r.key === cfg.key && Date.now() - r.at < 2 * 60 * 1000) {
+          authFailed = true;
+          status = { state: 'refused', code: r.code, detail: explain(r.code) };
+          return 'free';
+        }
+        hookGoogleErrors();
+        return loadGoogle(cfg.key).then(function () {
+          status = { state: 'google', code: null, detail: 'Google Maps is in use.' };
+          return 'google';
+        }, function (e) {
+          status = { state: 'load_failed', code: null, detail: (e && e.message) || 'Google Maps did not load.' };
+          return 'free';
+        });
+      }, function (e) {
+        status = { state: 'server_error', code: null, detail: 'Could not ask the server for the Google Maps key: ' + ((e && e.message) || e) };
         return 'free';
       })
-      .then(function (p) { provider = p; return p; });
+      .then(function (p) { provider = p; window.dispatchEvent(new Event('md-maps-status')); return p; });
     return providerReady;
   }
 
-  var REFUSED = 'md_maps_refused_key';
-  function refusedKey() { try { return sessionStorage.getItem(REFUSED); } catch (e) { return null; } }
+  var REFUSED = 'md_maps_refused';
+  function refused() { try { return JSON.parse(sessionStorage.getItem(REFUSED) || 'null'); } catch (e) { return null; } }
+  /* Forget a refusal and load the page again: after fixing the key. */
+  function retry() {
+    try { sessionStorage.removeItem(REFUSED); sessionStorage.removeItem('md_maps_refused_key'); } catch (e) { /* private window */ }
+    location.reload();
+  }
 
   function loadGoogle(key) {
     return new Promise(function (resolve, reject) {
+      var settled = false;
       // Called by Google when it refuses the key (wrong website restriction,
-      // API not enabled). The map shows Google's own error; this says why.
+      // API not enabled). The console error just before it names the reason.
       window.gm_authFailure = function () {
         authFailed = true;
-        console.error('Google Maps refused the browser key. Check its website restrictions '
-          + 'and that the Maps JavaScript API is enabled on it.');
+        if (status.state !== 'refused') status = { state: 'refused', code: null, detail: explain(null) };
+        console.warn('Google Maps refused the browser key: ' + status.detail);
         // Google leaves a grey "can't load Google Maps" box where the map was.
         // Switch to the free maps and ask the screen to draw itself again.
-        try { sessionStorage.setItem(REFUSED, key); } catch (e) { /* private window */ }
+        try { sessionStorage.setItem(REFUSED, JSON.stringify({ key: key, code: status.code, at: Date.now() })); } catch (e) { /* private window */ }
         provider = 'free';
         providerReady = Promise.resolve('free');
+        window.dispatchEvent(new Event('md-maps-status'));
         window.dispatchEvent(new Event('md-maps-fallback'));
       };
       window.__mdGoogleMapsLoaded = function () {
@@ -78,16 +137,16 @@ window.DRIVERS_MAP = (function () {
           google.maps.importLibrary('maps'),
           google.maps.importLibrary('marker'),
           google.maps.importLibrary('places').catch(function () { return null; }),
-        ]).then(function () { resolve(); }, reject);
+        ]).then(function () { settled = true; resolve(); }, function (e) { settled = true; reject(e); });
       };
       var s = document.createElement('script');
       s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key)
         + '&v=weekly&loading=async&region=IN&language=en&callback=__mdGoogleMapsLoaded';
       s.async = true;
-      s.onerror = function () { reject(new Error('Could not reach Google Maps.')); };
+      s.onerror = function () { settled = true; reject(new Error('Could not reach Google Maps from this computer (blocked by a network filter or ad blocker?).')); };
       document.head.appendChild(s);
       // Never wait for ever on a script that will not arrive.
-      setTimeout(function () { reject(new Error('Google Maps took too long to load.')); }, 15000);
+      setTimeout(function () { if (!settled) reject(new Error('Google Maps took too long to load.')); }, 15000);
     });
   }
 
@@ -493,6 +552,8 @@ window.DRIVERS_MAP = (function () {
     init: init,
     provider: function () { return provider; },
     keyRefused: function () { return authFailed; },
+    status: function () { return status; },
+    retry: retry,
     create: create,
     syncMarkers: syncMarkers,
     drawPlaces: drawPlaces,
@@ -500,6 +561,7 @@ window.DRIVERS_MAP = (function () {
     drawReplay: drawReplay,
     clearLayer: clearLayer,
     pin: pin,
+    line: function (h, id, pts, style) { if (h && h._ready) line(h, id, pts, style); },
     fit: fit,
     search: search,
     esc: esc,
