@@ -104,6 +104,7 @@ window.DRIVERS_API = (function () {
     download: download,
 
     dashboard: function () { return request(D + '/dashboard'); },
+    mapsConfig: function () { return request(D + '/maps-config'); },
     drivers: function (all) { return request(D + '/list' + (all ? '?all=1' : '')); },
     updateDriver: function (id, body) { return request(D + '/' + id, { method: 'PATCH', body: body }); },
     setDriverStatus: function (id, status) { return request(D + '/' + id + '/status', { method: 'POST', body: { status: status } }); },

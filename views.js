@@ -187,18 +187,20 @@ window.DRIVERS_VIEWS = (function () {
       state.map = MAPS.create('map');
       state.markers = {};
       if (state.map) {
-        state.map.once('load', function () {
+        var handle = state.map;
+        handle.ready(function () {
+          if (state.map !== handle) return;   // the tab changed while loading
           // Customers first, drivers on top: a driver must never be hidden
           // under a restaurant pin.
           var byId = {};
           restaurants.forEach(function (p) { byId[p.id] = p; });
-          MAPS.drawPlaces(state.map, 'restaurants',
+          MAPS.drawPlaces(handle, 'restaurants',
             restaurants.filter(function (x) { return x.active !== false && hasPin(x); }), '#D7262F',
             function (id) { if (byId[id]) restaurantModal(byId[id]); });
-          MAPS.drawPlaces(state.map, 'facilities', facilities.filter(hasPin), '#1B2A6B');
-          MAPS.syncMarkers({ map: state.map, markers: state.markers }, d.drivers, openDriver);
-          var coords = d.drivers.filter(function (x) { return x.lastLocation; }).map(function (x) { return [x.lastLocation.lng, x.lastLocation.lat]; });
-          MAPS.fitTo(state.map, coords);
+          MAPS.drawPlaces(handle, 'facilities', facilities.filter(hasPin), '#1B2A6B');
+          MAPS.syncMarkers({ map: handle, markers: state.markers }, (state.dashboard || d).drivers, openDriver);
+          MAPS.fit(handle, d.drivers.filter(function (x) { return x.lastLocation; }).map(function (x) { return x.lastLocation; }));
+          mapProviderNote('map', handle);
         });
         bindMapFind(restaurants);
       }
@@ -244,7 +246,7 @@ window.DRIVERS_VIEWS = (function () {
           if (!p) return;
           close();
           input.value = p.name;
-          if (state.map) state.map.flyTo({ center: [p.lng, p.lat], zoom: 16 });
+          if (state.map) state.map.flyTo({ lat: p.lat, lng: p.lng }, 16);
           restaurantModal(p);
         });
       });
@@ -468,7 +470,21 @@ window.DRIVERS_VIEWS = (function () {
       }
 
       html += '<div class="card"><h2>Route replay</h2><div id="replayMap"></div>'
-        + '<p class="tiny" style="margin-top:8px">Grey dots are fixes excluded from the distance (poor accuracy, impossible jumps, duplicates). They are kept and shown, never deleted.</p></div>';
+        + '<div class="replay-bar" id="replayBar" hidden>'
+        + '  <button type="button" class="btn-primary btn-sm" id="rpPlay" aria-label="Play">▶</button>'
+        + '  <input type="range" id="rpSeek" min="0" max="0" value="0" aria-label="Replay position">'
+        + '  <select id="rpSpeed" aria-label="Replay speed"><option value="60">1 min/s</option><option value="300" selected>5 min/s</option><option value="900">15 min/s</option></select>'
+        + '</div>'
+        + '<p class="tiny" id="rpNow" style="margin:6px 0 0"></p>'
+        + '<div class="legend">'
+        + '  <span><i style="background:' + MAPS.BUCKET_COLOUR.business + '"></i>Business</span>'
+        + '  <span><i style="background:' + MAPS.BUCKET_COLOUR.personal + '"></i>Personal</span>'
+        + '  <span><i style="background:' + MAPS.BUCKET_COLOUR.unknown + '"></i>Undecided</span>'
+        + '  <span><i style="background:' + MAPS.BUCKET_COLOUR.gap + '"></i>No GPS (dashed, straight line)</span>'
+        + '  <span><i style="background:#98a2b3;width:6px;height:6px"></i>Fix not counted</span>'
+        + '  <span><i style="background:#D7262F"></i>Restaurant visited</span>'
+        + '</div>'
+        + '<p class="tiny" id="rpNote" style="margin-top:8px">Grey dots are fixes left out of the distance (poor accuracy, impossible jumps, duplicates). They are kept and shown, never deleted.</p></div>';
 
       if (p) {
         html += '<div class="card"><h2>Segments</h2><div style="overflow-x:auto"><table><thead><tr>'
@@ -529,32 +545,109 @@ window.DRIVERS_VIEWS = (function () {
         API.revertReview(e.currentTarget.dataset.revert).then(function () { openRide(rideId); }).catch(function (err) { alert(err.message); });
       }, root);
 
-      var m = MAPS.create('replayMap', { zoom: 12 });
-      if (m && data.points && data.points.length) {
-        m.once('load', function () {
-          // Which fixes the calculation excluded, and why. This comes from the
-          // processing result, not from the raw documents — the raw documents
-          // are never annotated, because they are never modified.
-          var excluded = {};
-          if (p && p.track && p.track.excludedPoints) {
-            p.track.excludedPoints.forEach(function (x) { excluded[x.clientPointId] = x.quality; });
-          }
-          var pts = data.points.map(function (pt) {
-            return {
-              lat: pt.lat, lng: pt.lng,
-              quality: excluded[pt.clientPointId] || 'ok',
-              countDistance: !excluded[pt.clientPointId],
-            };
-          });
-          MAPS.drawRoute(m, 'ride', pts);
-          // A restaurant awaiting a location has no coordinates at all; it is
-          // not on the map, and the engine does not count it either.
-          MAPS.drawPlaces(m, 'restaurants', restaurants.filter(function (x) { return x.active !== false && hasPin(x); }), '#D7262F');
-          MAPS.drawPlaces(m, 'facilities', facilities, '#1B2A6B');
-          MAPS.fitTo(m, pts.map(function (pt) { return [pt.lng, pt.lat]; }));
-        });
-      }
+      drawRideReplay(data, restaurants, facilities);
     }).catch(function (e) { modal(errBox(e) + '<button class="btn-outline" id="btnCloseModal">Close</button>'); on('#btnCloseModal', 'click', closeModal, document.getElementById('modal')); });
+  }
+
+  /* The replay: the route coloured by what each stretch counted as, silences
+   * drawn as dashed straight lines, excluded fixes as grey dots, the restaurants
+   * visited numbered in order, and a playback head with the time and what the
+   * driver was doing at that moment. */
+  var KIND_LABEL = { business: 'business', personal: 'personal', unknown: 'undecided', gap: 'no GPS' };
+  function drawRideReplay(data, restaurants, facilities) {
+    var rp = data.replay;
+    var note = document.getElementById('rpNote');
+    if (!rp || !rp.points || !rp.points.length) {
+      if (note) note.textContent = 'No GPS was recorded on this ride, so there is no route to show.';
+      return;
+    }
+    var h = MAPS.create('replayMap', { zoom: 12 });
+    if (!h) return;
+    var p = data.processing;
+    var byId = {};
+    restaurants.forEach(function (x) { byId[x.id] = x; });
+    facilities.forEach(function (x) { byId[x.id] = x; });
+
+    // Restaurants visited, numbered in the order the driver reached them.
+    var visits = [];
+    ((p && p.segments) || []).forEach(function (s) {
+      if (s.kind !== 'stop' || !s.place) return;
+      var at = byId[s.place.id] && hasPin(byId[s.place.id]) ? byId[s.place.id] : s.center;
+      if (!at || !isFinite(at.lat)) return;
+      var facility = s.type === 'MODERN_DAIRY_FACILITY_STOP';
+      visits.push({ lat: at.lat, lng: at.lng, label: facility ? 'MD' : String(visits.filter(function (v) { return !v.facility; }).length + 1),
+        facility: facility, color: facility ? '#1B2A6B' : '#D7262F', title: s.place.name + ' · ' + time(s.startTs) + '–' + time(s.endTs) });
+    });
+
+    // Only the restaurants near the route: three thousand pins would bury it.
+    var used = rp.points.filter(function (q) { return q.used; });
+    var step = Math.max(1, Math.floor(used.length / 300));
+    var sample = used.filter(function (q, i) { return i % step === 0; });
+    var near = restaurants.filter(function (x) {
+      if (x.active === false || !hasPin(x)) return false;
+      for (var i = 0; i < sample.length; i += 1) {
+        var dLat = (x.lat - sample[i].lat) * 111320;
+        var dLng = (x.lng - sample[i].lng) * 111320 * Math.cos(x.lat * Math.PI / 180);
+        if (dLat * dLat + dLng * dLng < 800 * 800) return true;
+      }
+      return false;
+    });
+
+    h.ready(function () {
+      MAPS.drawPlaces(h, 'near', near, '#e8a3a6', function (id) { if (byId[id]) restaurantModal(byId[id]); });
+      var play = MAPS.drawReplay(h, rp, { visits: visits });
+      if (!play || !play.count) {
+        if (note) note.textContent = 'Every fix on this ride was left out of the distance, so only grey dots are shown.';
+        return;
+      }
+      if (!rp.calculated && note) note.textContent = 'This ride has not been calculated yet: the route is shown as recorded, undecided, with nothing left out.';
+      bindReplayControls(play, rp);
+    });
+  }
+
+  function bindReplayControls(play, rp) {
+    var bar = document.getElementById('replayBar');
+    var seek = document.getElementById('rpSeek');
+    var btn = document.getElementById('rpPlay');
+    var speed = document.getElementById('rpSpeed');
+    var now = document.getElementById('rpNow');
+    if (!bar || !seek) return;
+    var pts = play.points;
+    bar.hidden = false;
+    seek.max = String(pts.length - 1);
+    var gapFrom = {};
+    (rp.gaps || []).forEach(function (g) { gapFrom[g.fromTs] = g; });
+    var show = function (i) {
+      var q = play.seek(i);
+      if (!q) return;
+      var g = gapFrom[q.ts];
+      now.innerHTML = '<b>' + time(q.ts) + '</b> · ' + esc(KIND_LABEL[q.b] || 'undecided')
+        + (g ? ' · then no GPS for ' + Math.round(g.seconds / 60) + ' min' : '')
+        + ' · fix ' + (i + 1) + ' of ' + pts.length;
+    };
+    var timer = null;
+    var stop = function () { clearInterval(timer); timer = null; btn.textContent = '▶'; btn.setAttribute('aria-label', 'Play'); };
+    // Playback runs on the clock of the ride, not on fix numbers: a parked
+    // hour passes as fast as a driven one would at the same speed setting.
+    var TICK_MS = 100;
+    var tick = function () {
+      if (!document.body.contains(seek)) { stop(); return; }
+      var i = Number(seek.value);
+      if (i >= pts.length - 1) { stop(); return; }
+      var target = pts[i].ts + Number(speed.value) * 1000 * (TICK_MS / 1000);
+      while (i < pts.length - 1 && pts[i + 1].ts <= target) i += 1;
+      if (i === Number(seek.value)) i += 1;   // always move, even across a silence
+      seek.value = String(i);
+      show(i);
+    };
+    btn.addEventListener('click', function () {
+      if (timer) { stop(); return; }
+      if (Number(seek.value) >= pts.length - 1) seek.value = '0';
+      btn.textContent = '❚❚'; btn.setAttribute('aria-label', 'Pause');
+      timer = setInterval(tick, TICK_MS);
+    });
+    seek.addEventListener('input', function () { show(Number(seek.value)); });
+    show(0);
   }
 
   var REVIEW_TYPES = [
@@ -1617,7 +1710,7 @@ window.DRIVERS_VIEWS = (function () {
     var c = p.candidate || {};
     var g = p.geocode || {};
     var start = (typeof c.lat === 'number' && isFinite(c.lat) && typeof c.lng === 'number' && isFinite(c.lng))
-      ? [c.lng, c.lat] : null;
+      ? { lat: c.lat, lng: c.lng } : null;
     var many = queue.length > 1;
 
     modal((many ? '<p class="tiny" style="margin:0 0 2px">' + (i + 1) + ' of ' + queue.length + '</p>' : '')
@@ -1660,32 +1753,36 @@ window.DRIVERS_VIEWS = (function () {
     }
     show();
 
-    // The modal has only just been written into the page; MapLibre needs the
+    // The modal has only just been written into the page; the map needs the
     // container to have a size before it measures itself.
     setTimeout(function () {
       var m = MAPS.create('pickMap', { center: start || undefined, zoom: start ? 15 : 12 });
       if (!m) { msg.innerHTML = '<span class="err">The map could not be loaded.</span>'; return; }
       var marker = null;
-      function place(lngLat, byHand) {
-        chosen = { lat: lngLat.lat, lng: lngLat.lng };
+      function place(p, byHand) {
+        chosen = { lat: p.lat, lng: p.lng };
         if (byHand) moved = true;
-        if (marker) marker.setLngLat(lngLat);
-        else marker = new maplibregl.Marker({ color: '#D7262F', draggable: true }).setLngLat(lngLat).addTo(m);
-        marker.on('dragend', function () { place(marker.getLngLat(), true); });
+        if (marker) marker.setPosition(chosen);
+        else {
+          marker = MAPS.pin(m, 'pick', chosen, {
+            color: '#D7262F', draggable: true, title: 'Drag onto the building', z: 900,
+            onMove: function (q) { place(q, true); },
+          });
+        }
         show();
       }
-      if (start) place({ lng: start[0], lat: start[1] }, false);
-      m.on('click', function (e) { place(e.lngLat, true); });
+      m.ready(function () { if (start) place(start, false); });
+      m.onClick(function (p) { place(p, true); });
 
-      // Jumping to an area by name. Uses the same free map tiles as everything
-      // else, so it costs nothing and needs no key.
+      // Jumping to an area by name: Google Maps search when Google Maps is in
+      // use, OpenStreetMap's otherwise. Only moves the view, never the pin.
       function find() {
         var q = (document.getElementById('pickFind').value || '').trim();
         if (!q) return;
         msg.textContent = 'Looking…';
         MAPS.search(q).then(function (hit) {
           if (!hit) { msg.innerHTML = '<span class="err">Nothing found for that.</span>'; return; }
-          m.flyTo({ center: [hit.lng, hit.lat], zoom: 15 });
+          m.flyTo(hit, 16);
           show();
         }).catch(function () { msg.innerHTML = '<span class="err">Search is unavailable just now.</span>'; });
       }
@@ -2141,10 +2238,20 @@ window.DRIVERS_VIEWS = (function () {
         next += 1;
         msg.textContent = ' Loading ride ' + next + ' of ' + list.length + '…';
         return API.ride(r.id, true).then(function (full) {
-          var pts = (full.points || []).filter(function (p) {
-            return Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.countDistance !== false;
+          // Only the fixes the calculation counted, split wherever the GPS
+          // went silent: a spike or a silence is not a road anybody drove.
+          var rp = full.replay || { points: [], gaps: [] };
+          var gapAfter = {};
+          (rp.gaps || []).forEach(function (g) { gapAfter[g.fromTs] = true; });
+          var lines = [];
+          var cur = [];
+          rp.points.forEach(function (q) {
+            if (!q.used) return;
+            cur.push({ lat: q.lat, lng: q.lng });
+            if (gapAfter[q.ts]) { if (cur.length > 1) lines.push(cur); cur = []; }
           });
-          if (pts.length > 1) {
+          if (cur.length > 1) lines.push(cur);
+          if (lines.length) {
             if (!colourOf[r.driverId]) {
               colourOf[r.driverId] = TRACK_COLOURS[Object.keys(colourOf).length % TRACK_COLOURS.length];
             }
@@ -2152,7 +2259,7 @@ window.DRIVERS_VIEWS = (function () {
               rideId: r.id,
               label: (r.driverName || r.driverId) + ' · ' + (r.dayKey || ''),
               color: colourOf[r.driverId],
-              coords: pts.map(function (p) { return [p.lng, p.lat]; }),
+              lines: lines,
               driverId: r.driverId,
               driverName: r.driverName || r.driverId,
             });
@@ -2177,19 +2284,17 @@ window.DRIVERS_VIEWS = (function () {
         }
         if (!map) { msg.textContent = ' The map could not be loaded.'; btn.disabled = false; return; }
 
-        var paint = function () {
-          MAPS.clearLayer(map, 'tracks');
+        map.ready(function () {
+          if (state.tracksMap !== map) return;
           MAPS.drawTracks(map, 'tracks', tracks);
           API.places('restaurants').then(function (rs) {
-            MAPS.clearLayer(map, 'tracks-places');
             MAPS.drawPlaces(map, 'tracks-places',
               rs.filter(function (p) { return p.active !== false && hasPin(p); }), '#D7262F');
           }).catch(function () { /* the routes are the point; pins are a bonus */ });
           var all = [];
-          tracks.forEach(function (t) { all.push(t.coords[0], t.coords[t.coords.length - 1]); });
-          MAPS.fitTo(map, all);
-        };
-        if (map.isStyleLoaded()) paint(); else map.once('load', paint);
+          tracks.forEach(function (t) { t.lines.forEach(function (l) { all = all.concat(l); }); });
+          MAPS.fit(map, all);
+        });
 
         var seen = {};
         legend.innerHTML = tracks.filter(function (t) {
@@ -2472,6 +2577,62 @@ window.DRIVERS_VIEWS = (function () {
   /* The people offered as "stopped by" when a ride is stopped. Added from the
    * stop dialog as they are needed; removed here. Drawn at the top of
    * Settings, above the thresholds nobody should need to touch. */
+  /* Google Maps in the browser. The key is handed to every signed-in browser
+   * and to the driver app, so it must be locked to this site and the app in
+   * Google Cloud — that restriction, not secrecy, is what protects it. */
+  var MAPS_SITES = ['https://veerbhagtani.github.io/*', 'https://localhost/*'];
+  function mapsKeyCard() {
+    var host = document.createElement('div');
+    host.className = 'card';
+    host.id = 'mapsKeyCard';
+    view().insertBefore(host, view().firstChild);
+    Promise.all([API.integrationSecrets().catch(function () { return null; }), MAPS.init()]).then(function (r) {
+      var status = r[0];
+      var set_ = status && status.maps_browser === 'configured';
+      var running = MAPS.provider();
+      var refused = MAPS.keyRefused();
+      host.innerHTML = '<h2>Google Maps '
+        + (set_ ? (refused ? '<span class="pill bad">key refused</span>' : running === 'google' ? '<span class="pill ok">in use</span>' : '<span class="pill warn">saved, not loading</span>')
+          : '<span class="pill idle">free maps in use</span>') + '</h2>'
+        + '<p class="muted" style="margin-top:0">Every map here and in the driver app uses Google Maps once a browser key is saved; '
+        + 'until then, and if Google ever refuses the key, they fall back to the free maps so no screen goes blank.</p>'
+        + (refused ? '<div class="banner">Google refused the saved key. Check the website restrictions below and that the Maps JavaScript API is enabled for it.</div>' : '')
+        + '<details' + (set_ ? '' : ' open') + '><summary class="disclose">How to make the key</summary><ol class="muted" style="margin:10px 0 0 18px;padding:0">'
+        + '<li>Google Cloud console, project <b>modern-drivers-pune</b> → <b>APIs &amp; Services → Library</b>: enable <b>Maps JavaScript API</b> and <b>Places API (New)</b>.</li>'
+        + '<li><b>Credentials → Create credentials → API key</b>.</li>'
+        + '<li>Application restrictions: <b>Websites</b>, add ' + MAPS_SITES.map(function (x) { return '<code>' + esc(x) + '</code>'; }).join(' and ') + '.</li>'
+        + '<li>API restrictions: <b>Restrict key</b> → Maps JavaScript API and Places API (New) only.</li>'
+        + '<li>Copy the key and paste it below.</li></ol></details>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">'
+        + '<input id="mapsKey" type="password" autocomplete="off" placeholder="AIza…" style="max-width:420px">'
+        + '<button class="btn-outline btn-sm" id="btnMapsKey">' + (set_ ? 'Replace key' : 'Save key') + '</button>'
+        + '</div><p id="mapsKeyMsg" class="tiny" style="margin-top:8px"></p>';
+      on('#btnMapsKey', 'click', function () {
+        var v = (document.getElementById('mapsKey').value || '').trim();
+        var m = document.getElementById('mapsKeyMsg');
+        if (!/^AIza[0-9A-Za-z_-]{30,}$/.test(v)) { m.innerHTML = '<span class="err">That does not look like a Google API key (they start with AIza).</span>'; return; }
+        m.textContent = 'Saving…';
+        API.setIntegrationSecret('maps_browser', v).then(function () {
+          document.getElementById('mapsKey').value = '';
+          m.innerHTML = '<span class="ok-msg">Saved. Reloading so the maps switch over…</span>';
+          setTimeout(function () { location.reload(); }, 1200);
+        }).catch(function (e) { m.innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+      }, host);
+    });
+  }
+
+  /* Under a map: say when Google refused the key, so a free map is not
+   * mistaken for the Google one the office paid for. */
+  function mapProviderNote(containerId, h) {
+    if (!h || h.provider !== 'free' || !MAPS.keyRefused()) return;
+    var el = document.getElementById(containerId);
+    if (!el || el.nextElementSibling && el.nextElementSibling.classList.contains('map-note')) return;
+    var n = document.createElement('p');
+    n.className = 'tiny map-note err';
+    n.textContent = 'Google Maps refused the saved key, so the free maps are shown. See Settings → Google Maps.';
+    el.parentNode.insertBefore(n, el.nextSibling);
+  }
+
   function stopNamesCard() {
     var host = document.createElement('div');
     host.className = 'card';
@@ -2564,6 +2725,7 @@ window.DRIVERS_VIEWS = (function () {
         }).join('') + '</tbody></table></div></div>');
 
       stopNamesCard();
+      mapsKeyCard();
 
       on('#btnSaveCfg', 'click', function () {
         var overrides = {};
@@ -2607,6 +2769,14 @@ window.DRIVERS_VIEWS = (function () {
       });
     });
   }
+
+  // Google refused the key after a map was drawn: draw the screen again on
+  // the free maps. An open ride replay is closed rather than left grey.
+  window.addEventListener('md-maps-fallback', function () {
+    state.map = null; state.markers = {}; state.tracksMap = null;
+    if (document.getElementById('replayMap')) closeModal();
+    render();
+  });
 
   return { renderTabs: renderTabs, render: render, go: go, state: state };
 })();
