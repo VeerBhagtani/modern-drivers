@@ -190,10 +190,12 @@
       var btn = el('pwSave');
       btn.disabled = true; btn.textContent = 'Saving…';
       window.DRIVERS_API.changePassword(oldPw, a)
-        .then(function () {
+        .then(function (out) {
           msg.className = 'ok-msg';
           msg.textContent = 'Changed. Use the new password next time you sign in.';
           msg.hidden = false;
+          // The server signs out every older session; this one gets a new token.
+          if (session && out && out.token) session.token = out.token;
           if (session && session.admin) session.admin.mustChangePassword = false;
           try { sessionStorage.setItem(KEY, JSON.stringify(session)); } catch (e) { /* private window */ }
           setTimeout(function () { bg.classList.remove('on'); showApp(); }, 1200);

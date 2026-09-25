@@ -486,6 +486,26 @@ window.DRIVERS_VIEWS = (function () {
         + '</div>'
         + '<p class="tiny" id="rpNote" style="margin-top:8px">Grey dots are fixes left out of the distance (poor accuracy, impossible jumps, duplicates). They are kept and shown, never deleted.</p></div>';
 
+      if (p && p.legs && p.legs.length) {
+        var BUCKET_NAME = { verifiedBusiness: 'verified business', likelyBusiness: 'likely business', personal: 'personal', unknown: 'unknown', invalid: 'no GPS' };
+        html += '<div class="card"><h2>Route, leg by leg</h2>'
+          + '<p class="tiny" style="margin-top:0">Each leg runs from one place the driver stopped at to the next. A short pause on the road is part of the leg it interrupted.</p>'
+          + '<div style="overflow-x:auto"><table><thead><tr><th>Leg</th><th>Time</th><th>Distance</th><th>Counted as</th></tr></thead><tbody>'
+          + p.legs.map(function (l) {
+            var parts = Object.keys(l.byBucket || {}).filter(function (k) { return l.byBucket[k] > 0; })
+              .map(function (k) { return (l.byBucket[k] / 1000).toFixed(2) + ' km ' + esc(BUCKET_NAME[k] || k); });
+            return '<tr><td><b>' + esc(l.from.name) + '</b> → <b>' + esc(l.to ? l.to.name : '…') + '</b></td>'
+              + '<td>' + time(l.startTs) + '–' + time(l.endTs) + '</td>'
+              + '<td>' + (l.measuredM / 1000).toFixed(2) + ' km' + (l.gapEstimateM ? '<br><span class="tiny">+' + (l.gapEstimateM / 1000).toFixed(2) + ' km estimated across a GPS gap</span>' : '') + '</td>'
+              + '<td class="tiny">' + (parts.join('<br>') || '—') + '</td></tr>';
+          }).join('')
+          + '</tbody></table></div>'
+          + (p.legsCheck ? '<p class="tiny" style="margin-top:8px">Legs ' + (p.legsCheck.legsM / 1000).toFixed(2) + ' km + moved while stopped '
+            + (p.legsCheck.atStopsM / 1000).toFixed(2) + ' km = measured ' + (p.legsCheck.measuredM / 1000).toFixed(2) + ' km'
+            + (Math.abs(p.legsCheck.residualM) < 1 ? ' ✓' : ' — <b>does not add up (' + p.legsCheck.residualM + ' m); report this</b>') + '</p>' : '')
+          + '</div>';
+      }
+
       if (p) {
         html += '<div class="card"><h2>Segments</h2><div style="overflow-x:auto"><table><thead><tr>'
           + '<th>Time</th><th>What</th><th>Confidence</th><th>Distance</th><th>Evidence</th><th></th></tr></thead><tbody>'
@@ -2751,8 +2771,10 @@ window.DRIVERS_VIEWS = (function () {
     gapSeconds: ['A silence longer than this is a tracking gap, not travel',
       'Distance across a gap is reported separately as an estimate and never counted as measured.'],
     stopRadiusM: ['How tightly the phone must stay put for it to count as a stop', ''],
-    stopMinDwellSec: ['And for how long, before it is a stop rather than a traffic light',
-      'Lower and every red signal becomes a "visit". 180 s keeps deliveries and excludes junctions.'],
+    stopMinDwellSec: ['And for how long, before it is a stop',
+      '120 s, the same as a restaurant visit. A stop at no known place that is short and on the way is treated as a pause in traffic (next setting).'],
+    transitStopMaxSec: ['A stop at no known place shorter than this, on the way, is a pause — not a destination',
+      'Seconds. Traffic, fuel, a signal: the trip either side is judged by where it was going. Only if the stop lies on the direct route (≤30% detour).'],
     geofenceDefaultRadiusM: ['How close to a restaurant counts as being at it',
       'Used when a restaurant has no radius of its own. Wider means more visits credited, including wrong ones.'],
     facilityRadiusM: ['The same, for a Modern Dairy depot',
