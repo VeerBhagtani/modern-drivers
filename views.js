@@ -285,7 +285,8 @@ window.DRIVERS_VIEWS = (function () {
         return '<tr class="click" data-driver="' + esc(r.driverId) + '" data-ride="' + esc(r.rideId || '') + '">'
           + '<td><b>' + esc(r.name) + '</b><br><span class="tiny">' + esc(r.driverCode) + (r.status !== 'active' ? ' · inactive' : '') + '</span></td>'
           + '<td><span class="pill ' + esc(r.rideStatus === 'active' ? 'active' : 'idle') + '">' + esc(r.rideStatus.replace('_', ' ')) + '</span>'
-          + (r.rideStartedAt ? '<br><span class="tiny">from ' + time(r.rideStartedAt) + '</span>' : '') + '</td>'
+          + (r.rideStartedAt ? '<br><span class="tiny">from ' + time(r.rideStartedAt) + '</span>' : '')
+          + (r.roundName ? '<br><span class="tiny"><b>' + esc(r.roundName) + '</b></span>' : '') + '</td>'
           + '<td><span class="pill ' + esc(r.locationState) + '">' + esc(r.locationState === 'live' ? 'live' : r.locationState === 'stale' ? 'last known' : 'none') + '</span></td>'
           + '<td>' + esc(ago(r.lastUpdateAgeSec)) + '</td>'
           + '<td><span class="pill ' + esc(r.trackingHealth) + '">' + esc(r.trackingHealth.replace('_', ' ')) + '</span></td>'
@@ -351,7 +352,10 @@ window.DRIVERS_VIEWS = (function () {
       on('[data-openride]', 'click', function (e) { openRide(e.currentTarget.dataset.openride); }, root);
       on('#btnStop', 'click', function () { promptStop(row.rideId, false); }, root);
       on('#btnEmergency', 'click', function () { promptStop(row.rideId, true); }, root);
-    }).catch(function (e) { modal(errBox(e) + '<button class="btn-outline" onclick="document.getElementById(\'modalBg\').classList.remove(\'on\')">Close</button>'); });
+    }).catch(function (e) {
+      modal(errBox(e) + '<button class="btn-outline" id="btnCloseModal">Close</button>');
+      on('#btnCloseModal', 'click', closeModal, document.getElementById('modal'));
+    });
   }
 
   // The reason nearly every ride is stopped for. Tab in the empty reason box
@@ -442,6 +446,7 @@ window.DRIVERS_VIEWS = (function () {
 
       var html = '<h3 style="margin:0 0 2px">' + esc(data.ride.driverName || data.ride.driverId) + ' — ' + esc(data.ride.dayKey) + '</h3>'
         + '<p class="tiny" style="margin:0 0 12px">' + dateTime(data.ride.startedAt) + ' → ' + (data.ride.stoppedAt ? dateTime(data.ride.stoppedAt) : 'still running')
+        + (data.ride.roundName ? ' · round <b>' + esc(data.ride.roundName) + '</b>' : '')
         + (data.ride.stoppedByName ? ' · stopped by ' + esc(data.ride.stoppedByName) : '')
         + (data.ride.stopKind === 'day_end' ? ' · closed at the end of the day' : '')
         + ' · ' + (data.ride.pointCount || 0) + ' GPS fixes</p>';
@@ -2800,7 +2805,10 @@ window.DRIVERS_VIEWS = (function () {
   /* Google Maps in the browser. The key is handed to every signed-in browser
    * and to the driver app, so it must be locked to this site and the app in
    * Google Cloud — that restriction, not secrecy, is what protects it. */
-  var MAPS_SITES = ['https://veerbhagtani.github.io/*', 'https://localhost/*'];
+  // The site's own address first (https://<project>.web.app), then the old
+  // GitHub Pages copy, then the driver app.
+  var MAPS_SITES = [location.origin + '/*', 'https://veerbhagtani.github.io/*', 'https://localhost/*']
+    .filter(function (v, i, a) { return a.indexOf(v) === i; });
   function mapsKeyCard() {
     var host = document.createElement('div');
     host.className = 'card';
