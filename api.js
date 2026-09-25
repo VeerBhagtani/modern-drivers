@@ -131,23 +131,20 @@ window.DRIVERS_API = (function () {
     runAudit: function () { return request(D + '/maintenance/audit', { method: 'POST', body: {} }); },
     locationsLock: function () { return request(D + '/locations-lock'); },
     setLocationsLock: function (locked) { return request(D + '/locations-lock', { method: 'PUT', body: { locked: locked } }); },
-    // run: undefined → check what is unchecked; true → start re-checking
-    // everything; a number → carry on a re-check started at that server time.
-    googleCheck: function (run) {
+    // The location audit. run: undefined → check what is unchecked; true →
+    // start re-checking everything; a number → carry on a re-check started at
+    // that server time.
+    locationAudit: function (run) {
       var body = run === true ? { recheck: true } : typeof run === 'number' ? { recheckBefore: run } : {};
-      return request(D + '/restaurants/google-check', { method: 'POST', body: body });
+      return request(D + '/restaurants/location-audit', { method: 'POST', body: body });
     },
-    useGooglePins: function (ids) {
-      return request(D + '/restaurants/use-google-pins', { method: 'POST', body: { ids: ids } });
+    applyAuditLocation: function (id, reason) {
+      return request(D + '/restaurants/' + id + '/apply-audit-location', { method: 'POST', body: reason ? { reason: reason } : {} });
     },
-    useGooglePin: function (id, from) {
-      return request(D + '/restaurants/' + id + '/use-google-pin', { method: 'POST', body: from ? { from: from } : {} });
+    applyAuditLocations: function (ids) {
+      return request(D + '/restaurants/apply-audit-locations', { method: 'POST', body: { ids: ids } });
     },
-    // The Excel sheet against Google Maps; same run semantics as googleCheck.
-    sheetCheck: function (run) {
-      var body = run === true ? { recheck: true } : typeof run === 'number' ? { recheckBefore: run } : {};
-      return request(D + '/restaurants/sheet-check', { method: 'POST', body: body });
-    },
+    auditReport: function () { return download(D + '/restaurants/location-audit.csv', {}, 'location-audit.csv'); },
     setMobile: function (id, on) {
       return request(D + '/restaurants/' + id + '/mobile', { method: 'POST', body: { on: on } });
     },

@@ -90,7 +90,7 @@ window.DRIVERS_VIEWS = (function () {
     // Every map object belongs to a DOM node that is about to be replaced.
     // Keeping a reference would leave the next render talking to a container
     // that is no longer on the page.
-    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null; state.sheetMap = null;
+    state.map = null; state.markers = {}; state.replay = null; state.tracksMap = null; state.auditMap = null;
     renderTabs();
     render();
   }
@@ -898,85 +898,85 @@ window.DRIVERS_VIEWS = (function () {
 
   var restFilter = { q: '', show: 'all', shown: 200 };
 
-  /* The Excel sheet against Google Maps.
-   *
-   * For every restaurant, the address in the office's sheet is looked up on
-   * its own, and the restaurant is looked up on Google Maps by name on its own;
-   * the two answers are compared (backend/src/services/sheetCheck.js). The
-   * server works through a batch at a time; this keeps asking until nothing is
-   * left, so the progress is visible and no single request runs for minutes.
-   */
-  var SHEET_KIND = {
-    match: ['Matches', 'ok'],
-    far: ['Doesn\'t match', 'bad'],
-    no_business: ['Not on Google Maps', 'warn'],
-    no_address: ['No usable address in sheet', 'idle'],
+  /* The location audit: every restaurant's stored location against Google
+   * Maps (backend/src/services/locationAudit.js). The server works through a
+   * batch at a time; this keeps asking until nothing is left, so the progress
+   * is visible and no single request runs for minutes. Nothing here moves a
+   * pin except the explicit "apply" buttons, and every move is kept in the
+   * restaurant's location history. */
+  var AUDIT_KIND = {
+    VERIFIED: ['Verified', 'ok'],
+    MINOR_DIFFERENCE: ['Minor difference', 'warn'],
+    SIGNIFICANT_DIFFERENCE: ['Significant difference', 'bad'],
+    NOT_FOUND: ['Not found on Google', 'warn'],
+    NEEDS_MANUAL_REVIEW: ['Needs manual review', 'warn'],
+    NOT_CHECKED: ['Not checked', 'idle'],
   };
-  function sheetStatus(p) {
+  var SUBURB = 'accepted_in_bulk_AREA_ONLY';
+  function auditStatus(p) {
     if (!p || !p.name || p.active === false || isMobilePlace(p)) return null;
-    var c = p.sheetCheck;
-    if (!c || !c.status) return 'unchecked';
-    // A re-imported sheet with a different name or address makes the old
-    // verdict meaningless; the server compares the same key.
-    if (c.inputKey !== sheetKey(p)) return 'unchecked';
-    return c.status;
+    // auditCurrent comes from the server's own staleness rule.
+    if (!p.locationAudit || !p.auditCurrent) return 'NOT_CHECKED';
+    return p.locationAudit.status;
   }
-  function sheetKey(p) {
-    return [p.name, p.address, p.area].map(function (s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }).join('|');
-  }
-  function sheetCounts(list) {
-    var n = { match: 0, far: 0, no_business: 0, no_address: 0, unchecked: 0 };
-    list.forEach(function (p) { var st = sheetStatus(p); if (st) n[st] += 1; });
+  function auditCounts(list) {
+    var n = { VERIFIED: 0, MINOR_DIFFERENCE: 0, SIGNIFICANT_DIFFERENCE: 0, NOT_FOUND: 0, NEEDS_MANUAL_REVIEW: 0, NOT_CHECKED: 0, suburb: 0, suburbChecked: 0 };
+    list.forEach(function (p) {
+      var st = auditStatus(p);
+      if (!st) return;
+      n[st] += 1;
+      if (p.locationSource === SUBURB || (p.locationAudit && p.auditCurrent && p.locationAudit.storedIsSuburb)) {
+        n.suburb += 1;
+        if (st !== 'NOT_CHECKED') n.suburbChecked += 1;
+      }
+    });
     return n;
   }
-  function sheetPill(p) {
-    var st = sheetStatus(p);
+  function auditPill(p) {
+    var st = auditStatus(p);
     if (!st) return '';
-    if (st === 'unchecked') return '<br><span class="pill idle">sheet not checked</span>';
-    var c = p.sheetCheck; var k = SHEET_KIND[st];
-    return '<br><span class="pill ' + k[1] + '">' + esc(k[0]) + (st === 'far' && c.apartM != null ? ' · ' + distText(c.apartM) : '') + '</span>';
+    var a = p.locationAudit || {}; var k = AUDIT_KIND[st];
+    return '<br><span class="pill ' + k[1] + '">' + esc(k[0])
+      + (st !== 'NOT_CHECKED' && a.distanceM != null && st !== 'VERIFIED' ? ' · ' + distText(a.distanceM) : '') + '</span>';
   }
-  function distText(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : m + ' m'; }
-  // A pin further than this from where the sheet and Google both put the
-  // restaurant is wrong by any reading (the server uses the same figure).
-  var PIN_OFF_M = 150;
-  function pinOff(p) {
-    var c = p.sheetCheck || {};
-    if (!hasPin(p) || !isFinite(c.googleLat)) return !hasPin(p) && sheetStatus(p) === 'match';
-    var dLat = (p.lat - c.googleLat) * 111320;
-    var dLng = (p.lng - c.googleLng) * 111320 * Math.cos(p.lat * Math.PI / 180);
-    return Math.sqrt(dLat * dLat + dLng * dLng) > PIN_OFF_M;
+  function distText(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m'; }
+  // Mirrors locationAudit.bulkApplicable on the server, which decides.
+  function bulkApplicable(p) {
+    var a = p.locationAudit;
+    return !!(a && p.auditCurrent && a.found && a.confidence === 'HIGH' && !a.placedByHand && a.status === 'SIGNIFICANT_DIFFERENCE');
   }
 
-  function sheetPanel(all) {
-    var n = sheetCounts(all);
-    var problems = n.far + n.no_business;
-    return '<div class="banner ' + (problems || n.unchecked ? '' : 'info') + '" id="scPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
-      + '<div style="flex:1;min-width:220px"><b>Excel sheet vs Google Maps</b><br>'
-      + n.match + ' match'
-      + (n.far ? ' · <b>' + n.far + ' don\'t match</b>' : '')
-      + (n.no_business ? ' · ' + n.no_business + ' not on Google Maps' : '')
-      + (n.no_address ? ' · ' + n.no_address + ' no usable address' : '')
-      + (n.unchecked ? ' · ' + n.unchecked + ' not checked yet' : '')
-      + '<br><span id="scMsg" class="tiny"></span></div>'
-      + (n.unchecked
-        ? '<button class="btn-primary btn-sm" id="scRun" style="width:auto">Check ' + n.unchecked + ' against Google Maps</button>'
-        : '<button class="btn-outline btn-sm" id="scRerun" style="width:auto">Check all again</button>')
-      + '<button class="btn-' + (problems ? 'primary' : 'outline') + ' btn-sm" id="scResults" style="width:auto">See the results on the map</button>'
+  function auditPanel(all) {
+    var n = auditCounts(all);
+    var attention = n.SIGNIFICANT_DIFFERENCE + n.NEEDS_MANUAL_REVIEW + n.NOT_FOUND;
+    return '<div class="banner ' + (attention || n.NOT_CHECKED ? '' : 'info') + '" id="auPanel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:240px"><b>Location audit — our pins against Google Maps</b><br>'
+      + n.VERIFIED + ' verified · ' + n.MINOR_DIFFERENCE + ' minor'
+      + (n.SIGNIFICANT_DIFFERENCE ? ' · <b>' + n.SIGNIFICANT_DIFFERENCE + ' significant</b>' : '')
+      + (n.NEEDS_MANUAL_REVIEW ? ' · <b>' + n.NEEDS_MANUAL_REVIEW + ' need review</b>' : '')
+      + (n.NOT_FOUND ? ' · ' + n.NOT_FOUND + ' not found' : '')
+      + (n.NOT_CHECKED ? ' · ' + n.NOT_CHECKED + ' not checked' : '')
+      + (n.suburb ? '<br><span class="tiny">Suburb-centre pins: ' + n.suburbChecked + ' of ' + n.suburb + ' checked (they are checked first)</span>' : '')
+      + '<br><span id="auMsg" class="tiny"></span></div>'
+      + (n.NOT_CHECKED
+        ? '<button class="btn-primary btn-sm" id="auRun" style="width:auto">Check ' + n.NOT_CHECKED + ' against Google Maps</button>'
+        : '<button class="btn-outline btn-sm" id="auRerun" style="width:auto">Check all again</button>')
+      + '<button class="btn-' + (attention ? 'primary' : 'outline') + ' btn-sm" id="auResults" style="width:auto">See the audit</button>'
+      + '<button class="btn-outline btn-sm" id="auReport" style="width:auto">Download report</button>'
       + '</div>';
   }
 
-  /* Run the check until nothing is left. onDone runs after the last batch. */
-  function runSheetCheck(recheck, msg, onDone, stillHere) {
+  /* Run the audit until nothing is left. onDone runs after the last batch. */
+  function runAudit(recheck, msg, onDone, stillHere) {
     var done = 0;
     // "Check all again": the first batch starts the re-check and the server
     // answers with its own start time, which every later batch sends back.
     var run = recheck ? true : undefined;
     var step = function () {
-      return API.sheetCheck(run).then(function (r) {
+      return API.locationAudit(run).then(function (r) {
         if (recheck) run = r.recheckBefore;
         done += r.checked;
-        msg('Checked ' + done + ' · ' + r.remaining + ' to go…');
+        msg('Checked ' + done + ' · ' + r.remaining + ' to go…' + (r.failed ? ' (' + r.failed + ' failed, will be retried)' : ''));
         if (r.stoppedFor) { msg('<span class="err">' + esc(r.stoppedFor) + '</span>'); return false; }
         if (r.remaining > 0 && r.checked > 0 && stillHere()) return step();
         return onDone();
@@ -985,214 +985,187 @@ window.DRIVERS_VIEWS = (function () {
     return step();
   }
 
-  function bindSheetCheck() {
-    var msg = function (t) { var e = document.getElementById('scMsg'); if (e) e.innerHTML = t; };
+  function bindAudit() {
+    var msg = function (t) { var e = document.getElementById('auMsg'); if (e) e.innerHTML = t; };
     var go_ = function (recheck) {
-      ['scRun', 'scRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = true; });
-      runSheetCheck(recheck, msg, function () {
+      ['auRun', 'auRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = true; });
+      runAudit(recheck, msg, function () {
         return API.places('restaurants').then(function (list) { state.restaurants = list; render(); });
-      }, function () { return !!document.getElementById('scPanel'); }).catch(function (e) {
+      }, function () { return !!document.getElementById('auPanel'); }).catch(function (e) {
         msg('<span class="err">' + esc(e.message) + '</span>');
-        ['scRun', 'scRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = false; });
+        ['auRun', 'auRerun'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = false; });
       });
     };
-    on('#scRun', 'click', function () { go_(false); });
-    on('#scRerun', 'click', function () {
-      if (!confirm('Check every restaurant against Google Maps again?\n\nThis asks Google twice per restaurant (the address, and the name).')) return;
+    on('#auRun', 'click', function () { go_(false); });
+    on('#auRerun', 'click', function () {
+      if (!confirm('Check every restaurant against Google Maps again?\n\nThis asks Google two to four times per restaurant.')) return;
       go_(true);
     });
-    on('#scResults', 'click', function () { renderSheetResults().catch(function (e) { set(errBox(e)); }); });
+    on('#auResults', 'click', function () { renderAuditResults().catch(function (e) { set(errBox(e)); }); });
+    on('#auReport', 'click', function () { API.auditReport().catch(function (e) { alert(e.message); }); });
   }
 
   function gmapsAt(lat, lng) { return 'https://www.google.com/maps/search/?api=1&query=' + (+lat).toFixed(6) + ',' + (+lng).toFixed(6); }
-  function gmapsPlace(c, p) {
-    return c.googlePlaceId
-      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(c.googleName || p.name) + '&query_place_id=' + encodeURIComponent(c.googlePlaceId)
-      : gmapsAt(c.googleLat, c.googleLng);
+  function gmapsPlace(f, p) {
+    return f.placeId
+      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(f.name || p.name) + '&query_place_id=' + encodeURIComponent(f.placeId)
+      : gmapsAt(f.lat, f.lng);
   }
   function gmapsSearch(q) { return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q); }
-  function sheetAddress(p) { return [p.address, p.area].filter(Boolean).join(', '); }
 
-  var sheetFilter = 'problems';
-  function sheetRows(all) {
-    var order = { far: 0, no_business: 1, no_address: 2, match: 3 };
-    return all.filter(function (p) { var st = sheetStatus(p); return st && st !== 'unchecked'; })
-      .map(function (p) { return { p: p, st: sheetStatus(p), c: p.sheetCheck || {} }; })
-      .sort(function (a, b) { return order[a.st] - order[b.st] || (b.c.apartM || 0) - (a.c.apartM || 0); });
-  }
+  var auditFilter = 'attention';
+  var AUDIT_ORDER = { SIGNIFICANT_DIFFERENCE: 0, NEEDS_MANUAL_REVIEW: 1, NOT_FOUND: 2, MINOR_DIFFERENCE: 3, VERIFIED: 4, NOT_CHECKED: 5 };
 
-  /* Every restaurant's sheet address against Google Maps, on one screen: a
-   * map with both positions joined by a line, and a list with both addresses,
-   * how far apart they are, and links that open each in Google Maps. */
-  function renderSheetResults() {
+  /* The audit on one screen: our pin and Google's business on a map, joined
+   * by a line, and the table the office asked for — both positions, the
+   * distance, status, confidence, reason and recommended action — with the
+   * fix one tap away. */
+  function renderAuditResults() {
     return API.places('restaurants').then(function (all) {
       state.restaurants = all;
-      var rowsAll = sheetRows(all);
-      var n = sheetCounts(all);
-      var FILTERS = [['problems', 'Don\'t match + not on Google (' + (n.far + n.no_business) + ')'], ['far', 'Don\'t match (' + n.far + ')'],
-        ['no_business', 'Not on Google Maps (' + n.no_business + ')'], ['no_address', 'No usable address (' + n.no_address + ')'],
-        ['pinoff', 'Pin is off — sheet and Google agree elsewhere'], ['match', 'Match (' + n.match + ')'], ['all', 'Everything checked (' + rowsAll.length + ')']];
+      var n = auditCounts(all);
+      var rowsAll = all.filter(function (p) { return auditStatus(p); })
+        .map(function (p) { return { p: p, st: auditStatus(p), a: p.auditCurrent ? (p.locationAudit || {}) : {} }; })
+        .sort(function (x, y) { return AUDIT_ORDER[x.st] - AUDIT_ORDER[y.st] || ((y.a.distanceM || 0) - (x.a.distanceM || 0)); });
+      var FILTERS = [
+        ['attention', 'Needs attention (' + (n.SIGNIFICANT_DIFFERENCE + n.NEEDS_MANUAL_REVIEW + n.NOT_FOUND) + ')'],
+        ['SIGNIFICANT_DIFFERENCE', 'Significant difference (' + n.SIGNIFICANT_DIFFERENCE + ')'],
+        ['NEEDS_MANUAL_REVIEW', 'Needs manual review (' + n.NEEDS_MANUAL_REVIEW + ')'],
+        ['NOT_FOUND', 'Not found on Google (' + n.NOT_FOUND + ')'],
+        ['MINOR_DIFFERENCE', 'Minor difference (' + n.MINOR_DIFFERENCE + ')'],
+        ['VERIFIED', 'Verified (' + n.VERIFIED + ')'],
+        ['suburb', 'Suburb-centre pins (' + n.suburb + ')'],
+        ['NOT_CHECKED', 'Not checked (' + n.NOT_CHECKED + ')'],
+        ['all', 'All (' + rowsAll.length + ')'],
+      ];
       var keep = function (r) {
-        if (sheetFilter === 'all') return true;
-        if (sheetFilter === 'problems') return r.st === 'far' || r.st === 'no_business';
-        if (sheetFilter === 'pinoff') return r.st === 'match' && pinOff(r.p);
-        return r.st === sheetFilter;
+        if (auditFilter === 'all') return true;
+        if (auditFilter === 'attention') return r.st === 'SIGNIFICANT_DIFFERENCE' || r.st === 'NEEDS_MANUAL_REVIEW' || r.st === 'NOT_FOUND';
+        if (auditFilter === 'suburb') return r.p.locationSource === SUBURB || r.a.storedIsSuburb;
+        return r.st === auditFilter;
       };
       var rows = rowsAll.filter(keep);
-      var fixIds = rowsAll.filter(function (r) { return r.st === 'match' && pinOff(r.p); }).map(function (r) { return r.p.id; });
+      var fixIds = rowsAll.filter(function (r) { return bulkApplicable(r.p); }).map(function (r) { return r.p.id; });
       var SHOW_MAX = 300;
 
       set('<div class="card">'
-        + '<p style="margin:0 0 10px"><button class="btn-outline btn-sm" id="scBack" style="width:auto">← Restaurants</button></p>'
-        + '<h2>Excel sheet vs Google Maps</h2>'
-        + '<p class="muted" style="margin-top:0">For each restaurant, the <b>address in your Excel sheet</b> is found on Google Maps on its own, '
-        + 'and the <b>restaurant is found on Google Maps by its name</b> on its own. If the two are close, they match. '
-        + '"Close" depends on the address: 250 m for a building, 500 m for a street, 2 km when the sheet only gives an area.</p>'
-        + '<p class="muted"><b>' + n.match + ' match</b> · <b>' + n.far + ' don\'t match</b> · ' + n.no_business + ' not on Google Maps · '
-        + n.no_address + ' no usable address' + (n.unchecked ? ' · <b>' + n.unchecked + ' not checked yet</b>' : '') + '</p>'
-        + '<p><button class="btn-' + (n.unchecked ? 'primary' : 'outline') + ' btn-sm" id="scCheck" style="width:auto">'
-        + (n.unchecked ? 'Check the ' + n.unchecked + ' not checked yet' : 'Check every restaurant again') + '</button> '
-        + '<span id="scCheckMsg" class="tiny"></span></p>'
-        + '<div class="bar"><div><select id="scFilter">' + FILTERS.map(function (f) {
-          return '<option value="' + f[0] + '"' + (sheetFilter === f[0] ? ' selected' : '') + '>' + esc(f[1]) + '</option>';
+        + '<p style="margin:0 0 10px"><button class="btn-outline btn-sm" id="auBack" style="width:auto">← Restaurants</button></p>'
+        + '<h2>Location audit — our pins against Google Maps</h2>'
+        + '<p class="muted" style="margin-top:0">Each restaurant is looked up on Google Maps by its name, address and area; by its name\'s key words when Google names it differently; '
+        + 'and by what is actually around our pin. Names do not have to be identical, but a match needs evidence — the same phone number, closeness to our pin or to the sheet\'s address, or the same area. '
+        + 'The distance is judged against the 80 m visit geofence: <b>verified</b> within 50 m, <b>minor</b> 50–100 m, <b>significant</b> beyond 100 m (a driver at the shop would be outside the geofence).</p>'
+        + '<p class="muted"><b>' + n.VERIFIED + ' verified</b> · ' + n.MINOR_DIFFERENCE + ' minor · <b>' + n.SIGNIFICANT_DIFFERENCE + ' significant</b> · <b>'
+        + n.NEEDS_MANUAL_REVIEW + ' need review</b> · ' + n.NOT_FOUND + ' not found' + (n.NOT_CHECKED ? ' · <b>' + n.NOT_CHECKED + ' not checked yet</b>' : '') + '</p>'
+        + '<p><button class="btn-' + (n.NOT_CHECKED ? 'primary' : 'outline') + ' btn-sm" id="auCheck" style="width:auto">'
+        + (n.NOT_CHECKED ? 'Check the ' + n.NOT_CHECKED + ' not checked yet' : 'Check every restaurant again') + '</button> '
+        + '<span id="auCheckMsg" class="tiny"></span></p>'
+        + '<div class="bar"><div><select id="auFilter">' + FILTERS.map(function (f) {
+          return '<option value="' + f[0] + '"' + (auditFilter === f[0] ? ' selected' : '') + '>' + esc(f[1]) + '</option>';
         }).join('') + '</select></div>'
-        + (fixIds.length ? '<div><button class="btn-primary" id="scFixAll" style="width:auto">Move ' + fixIds.length + ' pin(s) to where the sheet and Google agree</button></div>' : '')
-        + '<div><button class="btn-outline" id="scCsv" style="width:auto">Download all results (Excel/CSV)</button></div></div>'
-        + '<p id="scFixMsg" class="tiny"></p>'
+        + (fixIds.length ? '<div><button class="btn-primary" id="auFixAll" style="width:auto">Apply ' + fixIds.length + ' high-confidence correction(s)</button></div>' : '')
+        + '<div><button class="btn-outline" id="auCsv" style="width:auto">Download the audit report (Excel/CSV)</button></div></div>'
+        + '<p id="auFixMsg" class="tiny"></p>'
         + '<div class="legend" style="margin:0 0 10px">'
-        + '<span><i style="background:#2f6fd6"></i>Address in the Excel sheet</span>'
-        + '<span><i style="background:#0f7a4a"></i>Where Google Maps has the restaurant</span>'
-        + '<span><i style="background:#D7262F;width:6px;height:6px"></i>Pin in use now</span></div>'
-        + '<div id="sheetMap" style="width:100%;height:460px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
+        + '<span><i style="background:#D7262F"></i>Our pin</span>'
+        + '<span><i style="background:#0f7a4a"></i>Where Google Maps has the business</span>'
+        + '<span><i style="background:#c98a12"></i>Our pin — not found / needs review</span></div>'
+        + '<div id="auditMap" style="width:100%;height:460px;border-radius:12px;border:1px solid var(--line);background:#e3e6ef"></div>'
         + (rows.length
-          ? '<div style="overflow-x:auto;margin-top:12px"><table><thead><tr><th>Restaurant</th><th>Result</th><th>Excel sheet address</th><th>Google Maps</th><th>Apart</th><th>Pin now</th><th></th></tr></thead><tbody>'
+          ? '<div style="overflow-x:auto;margin-top:12px"><table><thead><tr><th>Customer</th><th>Our pin</th><th>Google Maps</th><th>Apart</th><th>Result</th><th>Reason · recommended action</th><th></th></tr></thead><tbody>'
             + rows.slice(0, SHOW_MAX).map(function (r) {
-              var p = r.p; var c = r.c; var k = SHEET_KIND[r.st];
-              var hasA = isFinite(c.addressLat); var hasG = isFinite(c.googleLat);
-              return '<tr data-sc="' + esc(p.id) + '">'
-                + '<td><b>' + esc(p.name) + '</b>' + (p.customerId ? '<br><span class="tiny">' + esc(p.customerId) + '</span>' : '') + '</td>'
-                + '<td><span class="pill ' + k[1] + '">' + esc(k[0]) + '</span>'
-                + (c.nameMatch === 'partial' ? '<br><span class="tiny">Google\'s name differs</span>' : '')
-                + (c.branches > 1 ? '<br><span class="tiny">' + c.branches + ' branches on Google; nearest used</span>' : '') + '</td>'
-                + '<td class="tiny">' + esc(sheetAddress(p) || '—')
-                + (hasA ? '<br><a href="' + gmapsAt(c.addressLat, c.addressLng) + '" target="_blank" rel="noopener">Open in Google Maps</a>'
-                  + ' <span style="opacity:.7">(' + esc(c.addressPrecision || '') + ')</span>' : '') + '</td>'
-                + '<td class="tiny">' + (hasG
-                  ? '<a href="' + gmapsPlace(c, p) + '" target="_blank" rel="noopener">' + esc(c.googleName || 'Open in Google Maps') + '</a>'
-                    + (c.googleAddress ? '<br>' + esc(c.googleAddress) : '')
-                  : esc(c.googleGuess ? 'Closest result: ' + c.googleGuess : 'Nothing by this name')
-                    + '<br><a href="' + gmapsSearch(p.name + ', Pune') + '" target="_blank" rel="noopener">Search Google Maps</a>') + '</td>'
-                + '<td>' + (c.apartM != null ? distText(c.apartM) : '—') + '</td>'
+              var p = r.p; var a = r.a; var f = a.found || null; var k = AUDIT_KIND[r.st];
+              return '<tr data-au="' + esc(p.id) + '">'
+                + '<td><b>' + esc(p.name) + '</b>' + (p.customerId ? '<br><span class="tiny">ID ' + esc(p.customerId) + '</span>' : '')
+                + (p.area ? '<br><span class="tiny">' + esc(p.area) + '</span>' : '') + '</td>'
                 + '<td class="tiny">' + (hasPin(p)
-                  ? (hasG ? distText(Math.round(distM(p, { lat: c.googleLat, lng: c.googleLng }))) + ' from Google' : '')
-                    + (hasA ? '<br>' + distText(Math.round(distM(p, { lat: c.addressLat, lng: c.addressLng }))) + ' from address' : '')
-                    + '<br><a href="' + gmapsAt(p.lat, p.lng) + '" target="_blank" rel="noopener">Open pin</a>'
+                  ? '<a href="' + gmapsAt(p.lat, p.lng) + '" target="_blank" rel="noopener">' + p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + '</a>'
+                    + '<br>' + esc((p.locationSource || 'spreadsheet').replace(/_/g, ' ')) + (a.storedIsSuburb ? ' <b>(suburb centre)</b>' : '')
                   : 'no pin') + '</td>'
+                + '<td class="tiny">' + (f
+                  ? '<a href="' + gmapsPlace(f, p) + '" target="_blank" rel="noopener">' + esc(f.name || 'Open in Google Maps') + '</a>'
+                    + (f.address ? '<br>' + esc(f.address) : '') + '<br>' + (+f.lat).toFixed(5) + ', ' + (+f.lng).toFixed(5)
+                    + '<br><span style="opacity:.7">found by ' + esc(({ name_address: 'name + address', short_name: 'shortened name', nearby: 'nearby search' })[f.via] || f.via) + '</span>'
+                  : (r.st === 'NOT_CHECKED' ? '—' : 'No match<br><a href="' + gmapsSearch(p.name + ', ' + (p.area || 'Pune')) + '" target="_blank" rel="noopener">Search Google Maps</a>')) + '</td>'
+                + '<td>' + (a.distanceM != null ? distText(a.distanceM) : '—') + '</td>'
+                + '<td><span class="pill ' + k[1] + '">' + esc(k[0]) + '</span>' + (a.confidence ? '<br><span class="tiny">' + esc(a.confidence) + ' confidence</span>' : '') + '</td>'
+                + '<td class="tiny" style="min-width:220px">' + esc(a.reason || '') + (a.action ? '<br><b>' + esc(a.action) + '</b>' : '') + '</td>'
                 + '<td style="white-space:nowrap">'
-                + '<button class="btn-outline btn-sm" data-scshow="' + esc(p.id) + '">Show</button> '
-                + (hasG && pinOff(p) ? '<button class="btn-primary btn-sm" data-scuse="' + esc(p.id) + '">Pin to Google\'s</button> ' : '')
-                + '<button class="btn-outline btn-sm" data-scopen="' + esc(p.id) + '">Open</button>'
+                + '<button class="btn-outline btn-sm" data-aushow="' + esc(p.id) + '">Show</button> '
+                + (f && r.st !== 'VERIFIED' && r.st !== 'NOT_CHECKED' ? '<button class="btn-primary btn-sm" data-auuse="' + esc(p.id) + '">Use Google\'s</button> ' : '')
+                + '<button class="btn-outline btn-sm" data-auopen="' + esc(p.id) + '">Open</button>'
                 + '</td></tr>';
             }).join('') + '</tbody></table></div>'
-            + (rows.length > SHOW_MAX ? '<p class="tiny">Showing ' + SHOW_MAX + ' of ' + rows.length + '. The download has all of them.</p>' : '')
+            + (rows.length > SHOW_MAX ? '<p class="tiny">Showing ' + SHOW_MAX + ' of ' + rows.length + '. The report has all of them.</p>' : '')
           : '<p class="muted" style="margin-top:12px">Nothing in this list.</p>')
         + '</div>');
 
-      on('#scBack', 'click', function () { state.sheetMap = null; render(); });
-      on('#scFilter', 'change', function (e) { sheetFilter = e.target.value; renderSheetResults(); });
+      on('#auBack', 'click', function () { state.auditMap = null; render(); });
+      on('#auFilter', 'change', function (e) { auditFilter = e.target.value; renderAuditResults(); });
       var byId = {};
       rowsAll.forEach(function (r) { byId[r.p.id] = r; });
-      var h = state.sheetMap = MAPS.create('sheetMap', { zoom: 11 });
+      var h = state.auditMap = MAPS.create('auditMap', { zoom: 11 });
       if (h) {
         h.ready(function () {
-          if (state.sheetMap !== h) return;
-          mapProviderNote('sheetMap', h);
+          if (state.auditMap !== h) return;
+          mapProviderNote('auditMap', h);
           var pts = [];
           rows.slice(0, SHOW_MAX).forEach(function (r) {
-            var p = r.p; var c = r.c;
-            var a = isFinite(c.addressLat) ? { lat: c.addressLat, lng: c.addressLng } : null;
-            var g = isFinite(c.googleLat) ? { lat: c.googleLat, lng: c.googleLng } : null;
-            if (a && g) MAPS.line(h, 'sheet', [a, g], { color: r.st === 'far' ? '#D7262F' : '#8b93a7', width: 2, dashed: true, z: 5 });
-            if (a) { pts.push(a); MAPS.pin(h, 'sheet', a, { dot: 7, color: '#2f6fd6', title: p.name + ' — Excel address: ' + sheetAddress(p), z: 600 }); }
-            if (g) { pts.push(g); MAPS.pin(h, 'sheet', g, { dot: 7, color: '#0f7a4a', title: p.name + ' — Google Maps: ' + (c.googleName || '') + (c.googleAddress ? ', ' + c.googleAddress : ''), z: 650 }); }
-            if (hasPin(p)) MAPS.pin(h, 'sheet', { lat: p.lat, lng: p.lng }, { dot: 4, color: '#D7262F', title: p.name + ' — pin in use', z: 700 });
+            var p = r.p; var f = r.a.found;
+            var ours = hasPin(p) ? { lat: p.lat, lng: p.lng } : null;
+            var g = f && isFinite(f.lat) ? { lat: +f.lat, lng: +f.lng } : null;
+            if (ours && g) MAPS.line(h, 'audit', [ours, g], { color: r.st === 'SIGNIFICANT_DIFFERENCE' ? '#D7262F' : '#8b93a7', width: 2, dashed: true, z: 5 });
+            if (g) { pts.push(g); MAPS.pin(h, 'audit', g, { dot: 7, color: '#0f7a4a', title: p.name + ' — Google Maps: ' + (f.name || '') + (f.address ? ', ' + f.address : ''), z: 650 }); }
+            if (ours) {
+              pts.push(ours);
+              MAPS.pin(h, 'audit', ours, { dot: 7, color: (r.st === 'NOT_FOUND' || r.st === 'NEEDS_MANUAL_REVIEW') ? '#c98a12' : '#D7262F',
+                title: p.name + ' — our pin' + (r.a.distanceM != null ? ' (' + distText(r.a.distanceM) + ' from Google)' : ''), z: 700 });
+            }
           });
           MAPS.fit(h, pts);
         });
       }
-      on('[data-scshow]', 'click', function (e) {
-        var r = byId[e.currentTarget.dataset.scshow];
+      on('[data-aushow]', 'click', function (e) {
+        var r = byId[e.currentTarget.dataset.aushow];
         if (!r || !h) return;
-        var c = r.c; var pts = [];
-        if (isFinite(c.addressLat)) pts.push({ lat: c.addressLat, lng: c.addressLng });
-        if (isFinite(c.googleLat)) pts.push({ lat: c.googleLat, lng: c.googleLng });
+        var pts = [];
         if (hasPin(r.p)) pts.push({ lat: r.p.lat, lng: r.p.lng });
+        if (r.a.found) pts.push({ lat: +r.a.found.lat, lng: +r.a.found.lng });
         MAPS.fit(h, pts);
-        document.getElementById('sheetMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        document.getElementById('auditMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
-      on('[data-scopen]', 'click', function (e) { var r = byId[e.currentTarget.dataset.scopen]; if (r) restaurantModal(r.p); });
-      on('[data-scuse]', 'click', function (e) {
-        var b = e.currentTarget; var r = byId[b.dataset.scuse];
+      on('[data-auopen]', 'click', function (e) { var r = byId[e.currentTarget.dataset.auopen]; if (r) restaurantModal(r.p); });
+      on('[data-auuse]', 'click', function (e) {
+        var b = e.currentTarget; var r = byId[b.dataset.auuse];
         if (!r) return;
-        var warn = r.st === 'match' ? '' : '\n\nCareful: the sheet\'s address and Google do NOT agree on this one. Only do this if you know Google is right.';
-        if (!confirm('Move the pin of ' + r.p.name + ' to where Google Maps has it?' + warn + '\n\nThis moves its geofence and is recorded in the audit log.')) return;
+        var why = prompt('Move ' + r.p.name + ' to "' + (r.a.found.name || 'Google\'s position') + '"'
+          + (r.a.distanceM != null ? ' (' + distText(r.a.distanceM) + ' away)' : '') + '?\n\n'
+          + (r.a.confidence !== 'HIGH' ? 'The evidence is not conclusive (' + (r.a.confidence || 'LOW') + ' confidence). ' : '')
+          + 'The old position is kept in its history.\n\nWhy? (optional, recorded)', '');
+        if (why === null) return;
         b.disabled = true;
-        API.useGooglePin(r.p.id, 'sheet').then(function () { renderSheetResults(); }).catch(function (err) { b.disabled = false; alert(err.message); });
+        API.applyAuditLocation(r.p.id, why.trim()).then(function () { renderAuditResults(); }).catch(function (err) { b.disabled = false; alert(err.message); });
       });
-      on('#scFixAll', 'click', function () {
-        if (!confirm('Move ' + fixIds.length + ' pin(s) to Google\'s position?\n\n'
-          + 'Only restaurants where the Excel address and Google Maps agree, and the pin is more than ' + PIN_OFF_M + ' m away from them. '
-          + 'The ones that don\'t match still need a person. Every move is recorded in the audit log.')) return;
-        var b = document.getElementById('scFixAll'); b.disabled = true;
-        var m = document.getElementById('scFixMsg'); m.textContent = 'Moving…';
-        API.useGooglePins(fixIds).then(function (out) {
+      on('#auFixAll', 'click', function () {
+        if (!confirm('Apply ' + fixIds.length + ' high-confidence correction(s)?\n\n'
+          + 'Only "significant difference" results with HIGH confidence, never a pin the office placed by hand. Each pin moves to the business Google Maps has, '
+          + 'and its old position is kept in its history. Everything else still needs a person.')) return;
+        var b = document.getElementById('auFixAll'); b.disabled = true;
+        var m = document.getElementById('auFixMsg'); m.textContent = 'Applying…';
+        API.applyAuditLocations(fixIds).then(function (out) {
           m.innerHTML = '<span class="ok-msg">' + out.moved + ' moved.</span>' + (out.skipped ? ' ' + out.skipped + ' skipped (changed since the check).' : '');
-          setTimeout(function () { renderSheetResults(); }, 900);
+          setTimeout(function () { renderAuditResults(); }, 900);
         }).catch(function (err) { b.disabled = false; m.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
       });
-      on('#scCsv', 'click', function () { downloadSheetCsv(all); });
-      on('#scCheck', 'click', function () {
-        var again = !n.unchecked;
-        if (again && !confirm('Check every restaurant against Google Maps again?\n\nThis asks Google twice per restaurant.')) return;
-        var b = document.getElementById('scCheck'); b.disabled = true;
-        var m = function (t) { var el = document.getElementById('scCheckMsg'); if (el) el.innerHTML = t; };
-        runSheetCheck(again, m, function () { return renderSheetResults(); }, function () { return !!document.getElementById('scCheck'); })
+      on('#auCsv', 'click', function () { API.auditReport().catch(function (err) { alert(err.message); }); });
+      on('#auCheck', 'click', function () {
+        var again = !n.NOT_CHECKED;
+        if (again && !confirm('Check every restaurant against Google Maps again?\n\nThis asks Google two to four times per restaurant.')) return;
+        var b = document.getElementById('auCheck'); b.disabled = true;
+        var m = function (t) { var el = document.getElementById('auCheckMsg'); if (el) el.innerHTML = t; };
+        runAudit(again, m, function () { return renderAuditResults(); }, function () { return !!document.getElementById('auCheck'); })
           .catch(function (err) { b.disabled = false; m('<span class="err">' + esc(err.message) + '</span>'); });
       });
     });
-  }
-
-  function distM(a, b) {
-    var dLat = (a.lat - b.lat) * 111320;
-    var dLng = (a.lng - b.lng) * 111320 * Math.cos(a.lat * Math.PI / 180);
-    return Math.sqrt(dLat * dLat + dLng * dLng);
-  }
-
-  // Every restaurant, checked or not, so the download is the whole sheet with
-  // Google's answer beside each row.
-  function downloadSheetCsv(all) {
-    var q = function (v) { v = v == null ? '' : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var head = ['Restaurant', 'Customer ID', 'Excel address', 'Excel area', 'Result', 'Detail',
-      'Address found at (lat)', 'Address found at (lng)', 'Address precision', 'Excel address on Google Maps',
-      'Google name', 'Google address', 'Google lat', 'Google lng', 'Restaurant on Google Maps', 'Metres apart',
-      'Pin lat', 'Pin lng', 'Pin to Google (m)', 'Pin to address (m)'];
-    var rows = all.filter(function (p) { return sheetStatus(p); }).map(function (p) {
-      var st = sheetStatus(p); var c = st === 'unchecked' ? {} : (p.sheetCheck || {});
-      var hasA = isFinite(c.addressLat); var hasG = isFinite(c.googleLat);
-      return [p.name, p.customerId, p.address, p.area, st === 'unchecked' ? 'Not checked yet' : SHEET_KIND[st][0], c.detail,
-        hasA ? c.addressLat : '', hasA ? c.addressLng : '', c.addressPrecision, hasA ? gmapsAt(c.addressLat, c.addressLng) : '',
-        c.googleName, c.googleAddress, hasG ? c.googleLat : '', hasG ? c.googleLng : '', hasG ? gmapsPlace(c, p) : gmapsSearch(p.name + ', Pune'),
-        c.apartM, hasPin(p) ? p.lat : '', hasPin(p) ? p.lng : '',
-        hasPin(p) && hasG ? Math.round(distM(p, { lat: c.googleLat, lng: c.googleLng })) : '',
-        hasPin(p) && hasA ? Math.round(distM(p, { lat: c.addressLat, lng: c.addressLng })) : ''].map(q).join(',');
-    });
-    // The BOM makes Excel read the names as UTF-8.
-    var blob = new Blob(['﻿' + [head.join(',')].concat(rows).join('\r\n')], { type: 'text/csv;charset=utf-8' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url; a.download = 'excel-vs-google-maps.csv';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
   function renderRestaurants() {
@@ -1214,14 +1187,13 @@ window.DRIVERS_VIEWS = (function () {
         + metric(needPin, 'No location yet', needPin ? 'warn' : 'ok')
         + (trucks ? metric(trucks, 'Food trucks · no fixed address') : '')
         + '</div>'
-        + sheetPanel(all)
+        + auditPanel(all)
         + '<div class="bar">'
         + '<div style="flex:1;min-width:240px"><input id="rSearch" placeholder="Search name, area, address or customer ID" value="' + esc(restFilter.q) + '"></div>'
         + '<div><select id="rShow">'
         + [['all', 'All'], ['hold', 'Supply on hold'], ['supplying', 'Supplying'],
           ['nopin', 'No location yet'], ['check', 'Placed under a different name'],
-          ['sheet_problem', 'Excel address doesn\'t match Google'], ['sheet_nobiz', 'Not on Google Maps'],
-          ['sheet_unchecked', 'Not checked against Google yet'],
+          ['audit_attention', 'Location audit: needs attention'], ['audit_unchecked', 'Location audit: not checked'],
           ['mobile', 'Food trucks / mobile']]
           .map(function (o) {
             return '<option value="' + o[0] + '"' + (restFilter.show === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
@@ -1236,7 +1208,7 @@ window.DRIVERS_VIEWS = (function () {
 
       fillRestaurants();
       bindHoldButtons();
-      bindSheetCheck();
+      bindAudit();
       on('#rSearch', 'input', function (e) {
         restFilter.q = e.target.value; restFilter.shown = 200; fillRestaurants();
       });
@@ -1253,9 +1225,11 @@ window.DRIVERS_VIEWS = (function () {
     if (restFilter.show === 'mobile') return isMobilePlace(p);
     if (restFilter.show === 'hold') return p.supplyHold === true;
     if (restFilter.show === 'check') return p.locationSource === 'places_name_differs';
-    if (restFilter.show === 'sheet_problem') return sheetStatus(p) === 'far';
-    if (restFilter.show === 'sheet_nobiz') return sheetStatus(p) === 'no_business';
-    if (restFilter.show === 'sheet_unchecked') return sheetStatus(p) === 'unchecked';
+    if (restFilter.show === 'audit_attention') {
+      var ast = auditStatus(p);
+      return ast === 'SIGNIFICANT_DIFFERENCE' || ast === 'NEEDS_MANUAL_REVIEW' || ast === 'NOT_FOUND';
+    }
+    if (restFilter.show === 'audit_unchecked') return auditStatus(p) === 'NOT_CHECKED';
     // A truck has no address, so it does not belong in a list of places that
     // are missing one — it would sit there forever looking like outstanding
     // work nobody can finish. It stays reachable from its own filter, and
@@ -1295,7 +1269,7 @@ window.DRIVERS_VIEWS = (function () {
         + '<td class="tiny">' + (isMobilePlace(p)
           ? '<span class="pill idle">food truck</span>'
           : hasPin(p)
-            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + sheetPill(p)
+            ? p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + auditPill(p)
             : '<span class="pill warn">none yet</span>') + '</td>'
         + '<td class="tiny">' + (p.radiusM ? p.radiusM + ' m' : 'default') + '</td>'
         + '<td style="white-space:nowrap">'
@@ -1686,7 +1660,8 @@ window.DRIVERS_VIEWS = (function () {
           + '" target="_blank" rel="noopener">see the pin on Google Maps</a>'
         : 'No location yet, so it is not counted in any driver\'s kilometres.')
       + '</div>'
-      + sheetSection(place)
+      + auditSection(place)
+      + historySection(place)
 
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
       + (held
@@ -1694,7 +1669,7 @@ window.DRIVERS_VIEWS = (function () {
         : '<button class="btn-danger" id="rmHold" style="width:auto">Stop supply</button>')
       + '<button class="btn-outline" id="rmMobile" style="width:auto">'
       + (truck ? 'Not a food truck' : 'Mark as a food truck') + '</button>'
-      + (!truck && isFinite((place.sheetCheck || {}).googleLat) && sheetStatus(place) !== 'unchecked' && pinOff(place)
+      + (!truck && place.auditCurrent && place.locationAudit && place.locationAudit.found && ['VERIFIED', 'NOT_CHECKED'].indexOf(auditStatus(place)) === -1
         ? '<button class="btn-primary" id="rmUseGoogle" style="width:auto">Use Google Maps\' position</button>' : '')
       + (truck ? ''
         : hasPin(place)
@@ -1746,32 +1721,52 @@ window.DRIVERS_VIEWS = (function () {
     on('#rmPlace', 'click', reposition, root);
 
     on('#rmUseGoogle', 'click', function () {
-      var c = place.sheetCheck || {};
-      if (!confirm('Move ' + place.name + '\'s pin to where Google Maps has it'
-        + (c.googleName ? ' ("' + c.googleName + '")' : '') + '?'
-        + (hasPin(place) ? '\n\nThat is ' + distText(Math.round(distM(place, { lat: c.googleLat, lng: c.googleLng }))) + ' from where it is now.' : '')
-        + (sheetStatus(place) !== 'match' ? '\n\nCareful: the Excel address and Google do not agree on this one.' : '')
-        + '\n\nIts geofence moves with it, which changes which drives count as visits here from now on.')) return;
+      var a = place.locationAudit || {}; var f = a.found || {};
+      var why = prompt('Move ' + place.name + '\'s pin to "' + (f.name || 'Google\'s position') + '" on Google Maps?'
+        + (a.distanceM != null ? '\n\nThat is ' + distText(a.distanceM) + ' from where it is now.' : '')
+        + (a.confidence !== 'HIGH' ? '\n\nThe evidence is not conclusive (' + (a.confidence || 'LOW') + ' confidence).' : '')
+        + '\n\nIts geofence moves with it. The old position is kept in its history.\n\nWhy? (optional, recorded)', '');
+      if (why === null) return;
       document.getElementById('rmMsg').textContent = 'Saving…';
-      API.useGooglePin(place.id, 'sheet')
+      API.applyAuditLocation(place.id, why.trim())
         .then(function () { closeModal(); render(); })
         .catch(function (e) { document.getElementById('rmMsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
     }, root);
   }
 
-  function sheetSection(place) {
-    var st = sheetStatus(place);
+  function auditSection(place) {
+    var st = auditStatus(place);
     if (!st) return '';
-    if (st === 'unchecked') {
-      return '<div class="evidence"><b>Excel sheet vs Google Maps</b><br>Not checked yet. Use "Check against Google Maps" on the Restaurants tab.</div>';
+    if (st === 'NOT_CHECKED') {
+      return '<div class="evidence"><b>Location audit</b><br>' + (place.locationAudit ? 'Changed since it was last checked.' : 'Not checked yet.')
+        + ' Use "Check against Google Maps" on the Restaurants tab.</div>';
     }
-    var c = place.sheetCheck || {};
-    return '<div class="evidence"><b>Excel sheet vs Google Maps: ' + esc(SHEET_KIND[st][0]) + '</b><br>' + esc(c.detail || '')
-      + (sheetAddress(place) ? '<br><span class="tiny">Sheet: ' + esc(sheetAddress(place)) + '</span>'
-        + (isFinite(c.addressLat) ? ' · <a href="' + gmapsAt(c.addressLat, c.addressLng) + '" target="_blank" rel="noopener">open</a>' : '') : '')
-      + (isFinite(c.googleLat) ? '<br><span class="tiny">Google: ' + esc([c.googleName, c.googleAddress].filter(Boolean).join(', ')) + '</span>'
-        + ' · <a href="' + gmapsPlace(c, place) + '" target="_blank" rel="noopener">open</a>' : '')
-      + '<br><span class="tiny">Checked ' + dateTime(c.at) + '</span></div>';
+    var a = place.locationAudit; var f = a.found;
+    return '<div class="evidence"><b>Location audit: ' + esc(AUDIT_KIND[st][0]) + (a.confidence ? ' · ' + esc(a.confidence) + ' confidence' : '') + '</b><br>'
+      + esc(a.reason || '') + '<br><b>' + esc(a.action || '') + '</b>'
+      + (f ? '<br><span class="tiny">Google: ' + esc([f.name, f.address].filter(Boolean).join(', ')) + '</span>'
+        + ' · <a href="' + gmapsPlace(f, place) + '" target="_blank" rel="noopener">open in Google Maps</a>' : '')
+      + '<br><span class="tiny">Checked ' + dateTime(a.at) + '</span></div>';
+  }
+
+  /* Where the pin has been: the original position, then every move with who
+   * made it, why, and the verification it was based on. */
+  function historySection(place) {
+    var h = Array.isArray(place.locationHistory) ? place.locationHistory.slice().sort(function (x, y) { return y.at - x.at; }) : [];
+    var o = place.originalLocation;
+    if (!h.length && !o) return '';
+    var pos = function (q) { return q ? '<a href="' + gmapsAt(q.lat, q.lng) + '" target="_blank" rel="noopener">' + (+q.lat).toFixed(5) + ', ' + (+q.lng).toFixed(5) + '</a>' : 'none'; };
+    return '<details class="evidence"><summary><b>Location history</b> (' + h.length + ' change' + (h.length === 1 ? '' : 's') + ')</summary>'
+      + (o ? '<p class="tiny" style="margin:6px 0">Original: ' + pos(o) + ' · ' + esc(String(o.source || '').replace(/_/g, ' ')) + '</p>' : '')
+      + h.slice(0, 30).map(function (e) {
+        return '<p class="tiny" style="margin:6px 0">' + dateTime(e.at) + ' · ' + esc(e.by || '') + '<br>'
+          + pos(e.from) + (e.from ? ' (' + esc(String(e.from.source || '').replace(/_/g, ' ')) + ')' : '') + ' → ' + pos(e.to)
+          + (e.to ? ' (' + esc(String(e.to.source || '').replace(/_/g, ' ')) + ')' : '') + '<br>'
+          + esc(e.reason || '')
+          + (e.verification ? '<br>Based on: ' + esc(e.verification.status || '') + ', ' + esc(e.verification.confidence || '') + ' confidence'
+            + (e.verification.distanceM != null ? ', ' + distText(e.verification.distanceM) + ' apart' : '') : '') + '</p>';
+      }).join('')
+      + '</details>';
   }
 
   /* Supply currently stopped.
