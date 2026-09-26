@@ -149,6 +149,9 @@ window.DRIVERS_API = (function () {
       return request(D + '/restaurants/apply-audit-locations', { method: 'POST', body: { ids: ids } });
     },
     auditReport: function () { return download(D + '/restaurants/location-audit.csv', {}, 'location-audit.csv'); },
+    setTruckRoute: function (id, on) {
+      return request(D + '/restaurants/' + id + '/truck-route', { method: 'POST', body: { on: on } });
+    },
     setMobile: function (id, on) {
       return request(D + '/restaurants/' + id + '/mobile', { method: 'POST', body: { on: on } });
     },
