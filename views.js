@@ -2421,9 +2421,12 @@ window.DRIVERS_VIEWS = (function () {
 
   // ── Deliveries / integration ───────────────────────────────────────────
   function renderOrders() {
-    return Promise.all([API.sources(), API.orders({})]).then(function (r) {
+    return Promise.all([API.sources(), API.orders({}), API.drivers(true).catch(function () { return []; })]).then(function (r) {
       var s = r[0];
       var orders = r[1];
+      var driverName = {};
+      (r[2] || []).forEach(function (d) { driverName[d.id] = d.name + (d.driverCode ? ' (' + d.driverCode + ')' : ''); });
+      var unknown = orders.filter(function (o) { return o.customerKnown === false; }).length;
       set('<div class="card"><h2>Order sources</h2>'
         + '<table><thead><tr><th>Source</th><th>What it is</th><th>Status</th><th></th></tr></thead><tbody>'
         + s.sources.map(function (src) {
@@ -2434,19 +2437,27 @@ window.DRIVERS_VIEWS = (function () {
         + '<p class="tiny" style="margin-top:10px">Order records are what raise a restaurant visit from <b>likely</b> to <b>verified</b>. Without them most visits stay at MEDIUM confidence — that is the honest ceiling, not a bug.</p>'
         + '</div>'
 
-        + '<div class="card"><h2>Import orders (CSV)</h2>'
-        + '<p class="muted">Columns: <code>order_id, customer_id, driver_code, ordered_at, window_start, window_end, delivered_at, status, lat, lng</code>. Times without a timezone are read as IST.</p>'
-        + '<input type="file" id="ordFile" accept=".csv,text/csv" style="margin-bottom:10px">'
+        + '<div class="card"><h2>Import orders (Excel or CSV)</h2>'
+        + '<p class="muted">Your back office export, as it is. Needed: an <b>order / bill number</b> column and a <b>customer code</b> column '
+        + '(the same code as in the restaurant list). Helpful: <b>date</b> (and time), <b>driver</b> (code or name), delivery time, status.</p>'
+        + '<p class="tiny">Recognised names include Bill No, Invoice No, Order No · Customer Code, Party Code, Customer ID · '
+        + 'Date, Bill Date, Order Date, Time · Driver, Driver Name, Driver Code · Delivery Time · Status. '
+        + 'Dates like 25/09/2026 2:30 PM are read day-first, in IST. An order with only a date counts for the whole day; '
+        + 'an order after 6 pm counts for the next day too. Uploading the same file again updates rather than duplicates.</p>'
+        + '<input type="file" id="ordFile" accept=".csv,.xlsx,text/csv" style="margin-bottom:10px">'
         + '<div><button class="btn-primary" id="btnOrdImport">Import</button></div>'
         + '<p id="ordMsg" class="muted" style="margin-top:10px"></p></div>'
 
         + '<div class="card"><h2>Recent orders (' + orders.length + ')</h2>'
-        + (orders.length ? '<div style="overflow-x:auto"><table><thead><tr><th>Order</th><th>Customer</th><th>Driver</th><th>Ordered</th><th>Window</th><th>Status</th><th>Source</th></tr></thead><tbody>'
+        + (unknown ? '<div class="banner">' + unknown + ' of these orders have a customer code that matches <b>no restaurant</b>, so they can never match a visit. '
+          + 'Put the same code in the restaurant list\'s Customer ID (Locations → All restaurants → Edit), or check the code in the order file.</div>' : '')
+        + (orders.length ? '<div style="overflow-x:auto"><table><thead><tr><th>Order</th><th>Customer</th><th>Driver</th><th>Ordered</th><th>Window / delivered</th><th>Status</th><th>Source</th></tr></thead><tbody>'
           + orders.slice(0, 200).map(function (o) {
-            return '<tr><td>' + esc(o.externalId || o.id) + '</td><td>' + esc(o.customerId || '—') + '</td>'
-              + '<td>' + esc(o.assignedDriverId ? o.assignedDriverId.slice(0, 8) : '—') + '</td>'
-              + '<td>' + dateTime(o.orderedAt) + '</td>'
-              + '<td class="tiny">' + (o.windowStart ? time(o.windowStart) + '–' + time(o.windowEnd) : '—') + '</td>'
+            return '<tr><td>' + esc(o.externalId || o.id) + '</td><td>' + esc(o.customerId || '—')
+              + (o.customerKnown === false ? '<br><span class="pill bad">no such restaurant</span>' : '') + '</td>'
+              + '<td>' + (o.assignedDriverId ? esc(driverName[o.assignedDriverId] || o.assignedDriverId.slice(0, 8)) : '<span class="tiny">not assigned</span>') + '</td>'
+              + '<td>' + (o.orderedAt ? (o.orderedDateOnly ? esc(new Date(o.orderedAt + 19800000).toISOString().slice(0, 10)) + ' <span class="tiny">(whole day)</span>' : dateTime(o.orderedAt)) : '—') + '</td>'
+              + '<td class="tiny">' + (o.windowStart ? time(o.windowStart) + '–' + time(o.windowEnd) : (o.deliveredAt ? 'delivered ' + dateTime(o.deliveredAt) : '—')) + '</td>'
               + '<td>' + esc(o.status || '—') + '</td><td>' + esc(o.source) + '</td></tr>';
           }).join('') + '</tbody></table></div>'
           : '<p class="muted">No order records yet. Until there are, delivery matching has nothing to match against and every visit is reported as an unmatched visit.</p>')
@@ -2469,10 +2480,18 @@ window.DRIVERS_VIEWS = (function () {
       on('#btnOrdImport', 'click', function () {
         var f = document.getElementById('ordFile').files[0];
         var msg = document.getElementById('ordMsg');
-        if (!f) { msg.textContent = 'Choose a CSV file first.'; return; }
+        if (!f) { msg.textContent = 'Choose a file first.'; return; }
         msg.textContent = 'Importing…';
-        f.text().then(function (csv) { return API.importOrders(csv); }).then(function (out) {
+        // Excel read in the browser, like the restaurant list.
+        var read = /\.xlsx$/i.test(f.name)
+          ? f.arrayBuffer().then(window.DRIVERS_XLSX.readWorkbook).then(window.DRIVERS_XLSX.toCsv)
+          : f.text();
+        read.then(function (csv) { msg.textContent = 'Importing and recalculating the affected days…'; return API.importOrders(csv); }).then(function (out) {
           msg.innerHTML = '<b>' + out.imported + ' order(s) imported.</b>'
+            + (out.days && out.days.length ? '<br>Days affected: ' + esc(out.days.join(', ')) + ' · ' + (out.ridesToRecalculate || 0) + ' ride(s) updated'
+              + (out.recalculated != null ? ', ' + out.recalculated + ' recalculated now' : '') + '.' : '')
+            + (out.unknownCustomerCount ? '<br><span class="err">' + out.unknownCustomerCount + ' customer code(s) match no restaurant: '
+              + esc(out.unknownCustomers.slice(0, 15).join(', ')) + (out.unknownCustomerCount > 15 ? '…' : '') + '</span>' : '')
             + (out.rejected.length ? '<br>' + out.rejected.length + ' rejected: <span class="tiny">' + esc(out.rejected.slice(0, 10).map(function (x) { return (x.externalId || '?') + ': ' + x.problems.join(', '); }).join('; ')) + '</span>' : '')
             + (out.parseProblems && out.parseProblems.length ? '<br><span class="tiny">' + esc(out.parseProblems.slice(0, 10).join('; ')) + '</span>' : '');
           setTimeout(render, 1500);
