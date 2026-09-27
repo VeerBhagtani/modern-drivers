@@ -537,6 +537,7 @@ window.DRIVERS_VIEWS = (function () {
             + '<p class="muted">' + p.matching.summary.matched + ' matched · ' + p.matching.summary.possible + ' possible · '
             + p.matching.summary.unmatchedVisits + ' visits with no order · ' + p.matching.summary.unmatchedOrders + ' orders with no visit</p>'
             + '<p class="tiny">' + esc(p.matching.summary.distanceNote) + '</p>'
+            + deliveredTable(p.matching)
             + (p.matching.unmatchedVisits.length
               ? '<table><thead><tr><th>Visit</th><th>Location</th><th>Why unmatched</th></tr></thead><tbody>'
               + p.matching.unmatchedVisits.map(function (v) {
@@ -2420,6 +2421,25 @@ window.DRIVERS_VIEWS = (function () {
   }
 
   // ── Deliveries / integration ───────────────────────────────────────────
+  /* What was delivered and what was missed: planned stops (the driver's own
+   * round) and office orders, each with the visit that covered it or none. */
+  function deliveredTable(m) {
+    var byOrder = {};
+    (m.matches || []).forEach(function (x) { byOrder[x.orderId] = x; });
+    var rows = (m.matches || []).map(function (x) {
+      return '<tr><td>' + (x.source === 'driver_plan' ? 'Planned stop' : 'Order') + '</td>'
+        + '<td>' + esc(x.placeName || x.customerId || '—') + '</td>'
+        + '<td><span class="pill ' + (x.outcome === 'MATCHED' ? 'ok' : 'warn') + '">'
+        + (x.outcome === 'MATCHED' ? 'delivered ' + time(x.visitAt) : esc(x.outcome.toLowerCase().replace(/_/g, ' '))) + '</span></td></tr>';
+    }).concat((m.unmatchedOrders || []).map(function (o) {
+      return '<tr><td>' + (o.source === 'driver_plan' ? 'Planned stop' : 'Order') + '</td>'
+        + '<td>' + esc(o.placeName || o.customerId || '—') + '</td>'
+        + '<td><span class="pill bad">missed — no visit</span></td></tr>';
+    }));
+    if (!rows.length) return '<p class="muted">No planned stops or orders for this day. A round planned in the app lists its stops here automatically.</p>';
+    return '<table style="margin-bottom:12px"><thead><tr><th>From</th><th>Restaurant</th><th>Result</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+  }
+
   function renderOrders() {
     return Promise.all([API.sources(), API.orders({}), API.drivers(true).catch(function () { return []; })]).then(function (r) {
       var s = r[0];
