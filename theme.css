@@ -381,3 +381,37 @@ details.card>summary.disclose:focus-visible{outline:none;box-shadow:var(--focus)
   body{background:#fff;}
   .card{box-shadow:none;border-color:#ccc;break-inside:avoid;}
 }
+
+/* ── Journeys ─────────────────────────────────────────────────────────── */
+.jhead .bar{gap:12px;}
+.jdays{display:flex;gap:6px;margin-bottom:6px;}
+.jsplit{display:grid;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);gap:14px;align-items:start;}
+.jmapcard{padding:12px;}
+#jMap{width:100%;height:68vh;min-height:420px;border-radius:var(--r);border:1px solid var(--line);background:#e8eaf2;}
+.jbar{flex-wrap:wrap;}
+.jspeeds{display:flex;gap:4px;}
+.jspeeds .on{background:var(--navy);color:#fff;border-color:var(--navy);}
+.jnow{margin-top:8px;font-size:.9rem;line-height:1.5;min-height:3em;}
+.jclock{font-variant-numeric:tabular-nums;font-size:1.05rem;}
+.jtimeline{max-height:calc(68vh + 150px);display:flex;flex-direction:column;}
+#jEvents{overflow-y:auto;flex:1;margin-right:-8px;padding-right:8px;}
+.jlist{list-style:none;margin:0;padding:0;}
+.jev{display:flex;gap:10px;padding:8px 6px;border-left:3px solid var(--line);margin-left:46px;position:relative;cursor:pointer;border-radius:0 8px 8px 0;}
+.jev:hover{background:var(--bg);}
+.jev.on{background:#eef1fb;border-left-color:var(--navy);}
+.jev .jt{position:absolute;left:-50px;top:8px;width:44px;text-align:right;font-size:.75rem;color:var(--ink-2);font-variant-numeric:tabular-nums;}
+.jev .jb{flex:1;min-width:0;font-size:.88rem;line-height:1.4;}
+.jev-travel{border-left-style:dashed;}
+.jev-travel .jkm{font-weight:600;color:var(--ink);}
+.jev-ride{margin-left:0;border-left:none;padding:12px 0 4px;cursor:default;}
+.jdot{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:11px;color:#fff;font-size:.72rem;font-weight:700;padding:0 6px;margin-right:6px;vertical-align:middle;}
+.jlive{display:block;}
+table.kv{width:100%;table-layout:fixed;}
+table.kv th,table.kv td{padding:6px 8px;vertical-align:top;font-size:.88rem;overflow-wrap:anywhere;}
+table.kv th{text-transform:none;letter-spacing:0;font-weight:600;color:var(--ink-2);width:40%;background:none;white-space:normal;}
+@media (max-width:900px){
+  .jsplit{grid-template-columns:1fr;}
+  #jMap{height:56vh;min-height:320px;}
+  .jtimeline{max-height:none;}
+  #jEvents{max-height:60vh;}
+}

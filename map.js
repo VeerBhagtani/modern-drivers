@@ -364,7 +364,10 @@ window.DRIVERS_MAP = (function () {
         o.strokeOpacity = 0;
         o.icons = [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, strokeColor: color, scale: 3 }, offset: '0', repeat: '14px' }];
       }
-      keep(h, id, new google.maps.Polyline(o));
+      o.clickable = !!style.onClick;
+      var pl = new google.maps.Polyline(o);
+      if (style.onClick) pl.addListener('click', function () { style.onClick(); });
+      keep(h, id, pl);
       return;
     }
     h.__seq = (h.__seq || 0) + 1;
@@ -374,6 +377,11 @@ window.DRIVERS_MAP = (function () {
     var paint = { 'line-color': color, 'line-width': style.width || 4, 'line-opacity': style.opacity == null ? 0.9 : style.opacity };
     if (style.dashed) paint['line-dasharray'] = [1.5, 1.5];
     h.raw.addLayer({ id: src + '-line', type: 'line', source: src, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: paint });
+    if (style.onClick) {
+      h.raw.on('click', src + '-line', function () { style.onClick(); });
+      h.raw.on('mouseenter', src + '-line', function () { h.raw.getCanvas().style.cursor = 'pointer'; });
+      h.raw.on('mouseleave', src + '-line', function () { h.raw.getCanvas().style.cursor = ''; });
+    }
     keep(h, id, { maplibre: true, source: src, layers: [src + '-line'] });
   }
 
@@ -408,6 +416,7 @@ window.DRIVERS_MAP = (function () {
           strokeColor: '#fff', strokeWeight: opts.dot ? 3 : 2 },
       });
       if (opts.onMove) m.addListener('dragend', function (e) { opts.onMove({ lat: e.latLng.lat(), lng: e.latLng.lng() }); });
+      if (opts.onClick) m.addListener('click', function () { opts.onClick(); });
       keep(h, id, m);
       return { setPosition: function (q) { if (ok(q)) m.setPosition({ lat: q.lat, lng: q.lng }); }, remove: function () { m.setMap(null); } };
     }
@@ -419,6 +428,7 @@ window.DRIVERS_MAP = (function () {
       + 'cursor:' + (opts.draggable ? 'grab' : 'default');
     el.textContent = opts.label || '';
     el.title = opts.title || '';
+    if (opts.onClick) { el.style.cursor = 'pointer'; el.addEventListener('click', function (ev) { ev.stopPropagation(); opts.onClick(); }); }
     var mk = new maplibregl.Marker({ element: el, draggable: !!opts.draggable }).setLngLat([p.lng, p.lat]).addTo(h.raw);
     if (opts.onMove) mk.on('dragend', function () { var ll = mk.getLngLat(); opts.onMove({ lat: ll.lat, lng: ll.lng }); });
     keep(h, id, mk);
@@ -440,7 +450,10 @@ window.DRIVERS_MAP = (function () {
    */
   function drawReplay(h, replay, extras) {
     if (!h || !h._ready || !replay || !replay.points) return null;
-    clearLayer(h, 'replay');
+    extras = extras || {};
+    // Several rides on one map each draw under their own layer id.
+    var LAYER = extras.layer || 'replay';
+    clearLayer(h, LAYER);
     var used = replay.points.filter(function (p) { return p.used && ok(p); });
     var gapAfter = {};
     (replay.gaps || []).forEach(function (g) { gapAfter[g.fromTs] = true; });
@@ -449,7 +462,7 @@ window.DRIVERS_MAP = (function () {
     var run = [];
     var runB = null;
     var flush = function () {
-      if (run.length > 1) line(h, 'replay', run, { color: BUCKET_COLOUR[runB] || '#1B2A6B', width: 5, z: 20 });
+      if (run.length > 1) line(h, LAYER, run, { color: BUCKET_COLOUR[runB] || '#1B2A6B', width: 5, z: 20 });
       run = [];
     };
     for (var i = 0; i < used.length; i += 1) {
@@ -464,7 +477,7 @@ window.DRIVERS_MAP = (function () {
       run.push(p);
       if (gapAfter[p.ts] && used[i + 1]) {
         flush();
-        line(h, 'replay', [p, used[i + 1]], { color: BUCKET_COLOUR.gap, dashed: true, width: 3, z: 15 });
+        line(h, LAYER, [p, used[i + 1]], { color: BUCKET_COLOUR.gap, dashed: true, width: 3, z: 15 });
         runB = null;
       }
     }
@@ -481,24 +494,24 @@ window.DRIVERS_MAP = (function () {
           return { title: 'Not counted: ' + String(f.getProperty('why') || '').replace(/_/g, ' '),
             icon: { path: google.maps.SymbolPath.CIRCLE, scale: 3, fillColor: '#98a2b3', fillOpacity: 0.9, strokeWeight: 0 }, zIndex: 5 };
         });
-        keep(h, 'replay', layer);
+        keep(h, LAYER, layer);
       } else {
-        var src = 'replay-bad';
+        var src = LAYER + '-bad';
         h.raw.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: bad.map(function (q) {
           return { type: 'Feature', geometry: { type: 'Point', coordinates: [q.lng, q.lat] }, properties: {} };
         }) } });
         h.raw.addLayer({ id: src + '-dots', type: 'circle', source: src, paint: { 'circle-radius': 3, 'circle-color': '#98a2b3', 'circle-opacity': 0.9 } });
-        keep(h, 'replay', { maplibre: true, source: src, layers: [src + '-dots'] });
+        keep(h, LAYER, { maplibre: true, source: src, layers: [src + '-dots'] });
       }
     }
 
-    ((extras && extras.visits) || []).forEach(function (v) { pin(h, 'replay', v, { label: v.label, color: v.color || '#D7262F', title: v.title, z: 700 }); });
-    if (used.length) {
-      pin(h, 'replay', used[0], { label: 'S', color: '#0f7a4a', title: 'Start', z: 900 });
-      pin(h, 'replay', used[used.length - 1], { label: 'E', color: '#b3261e', title: 'End', z: 900 });
+    ((extras && extras.visits) || []).forEach(function (v) { pin(h, LAYER, v, { label: v.label, color: v.color || '#D7262F', title: v.title, z: 700 }); });
+    if (used.length && !extras.noEnds) {
+      pin(h, LAYER, used[0], { label: extras.startLabel || 'S', color: '#0f7a4a', title: extras.startTitle || 'Start', z: 900 });
+      pin(h, LAYER, used[used.length - 1], { label: extras.endLabel || 'E', color: '#b3261e', title: extras.endTitle || 'End', z: 900 });
     }
-    var head = used.length ? pin(h, 'replay', used[0], { dot: 8, color: '#1B2A6B', title: 'Replay position', z: 1000 }) : null;
-    fit(h, used.length ? used : replay.points);
+    var head = used.length && !extras.noHead ? pin(h, LAYER, used[0], { dot: 8, color: '#1B2A6B', title: 'Replay position', z: 1000 }) : null;
+    if (!extras.noFit) fit(h, used.length ? used : replay.points);
     return {
       count: used.length,
       points: used,

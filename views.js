@@ -29,6 +29,8 @@ window.DRIVERS_VIEWS = (function () {
 
   var TABS = [
     ['fleet', 'Live fleet'],
+    // A driver's whole day on one map: route, stops, replay, timeline.
+    ['journeys', 'Journeys'],
     ['drivers', 'Drivers'],
     // One row per driver per day. Rides close with their day, so a ride is a
     // day, and this is where a day's kilometres are looked up afterwards.
@@ -85,7 +87,9 @@ window.DRIVERS_VIEWS = (function () {
     on('[data-tab]', 'click', function (e) { go(e.currentTarget.dataset.tab); }, document.getElementById('tabs'));
   }
 
-  function go(tab) {
+  function go(tab, opts) {
+    if (window.DRIVERS_JOURNEY) window.DRIVERS_JOURNEY.stop();
+    state.journeyOpts = tab === 'journeys' ? (opts || null) : null;
     state.tab = tab;
     // Every map object belongs to a DOM node that is about to be replaced.
     // Keeping a reference would leave the next render talking to a container
@@ -98,6 +102,7 @@ window.DRIVERS_VIEWS = (function () {
   function render() {
     var fn = ({
       fleet: renderFleet, drivers: renderDrivers, history: renderHistory, review: renderReview,
+      journeys: function () { var o = state.journeyOpts; state.journeyOpts = null; return window.DRIVERS_JOURNEY.render(o || {}); },
       restaurants: renderRestaurants, places: renderPlaces,
       orders: renderOrders, reports: renderReports, alerts: renderAlerts,
       maintenance: renderMaintenance, settings: renderSettings,
@@ -298,9 +303,10 @@ window.DRIVERS_VIEWS = (function () {
   }
 
   function bindFleetRows() {
+    // A driver opens on their whole day: route, stops, timeline. The ride
+    // controls (stop the ride, history) are one button away on that page.
     on('tr[data-driver]', 'click', function (e) {
-      var row = state.dashboard.drivers.find(function (d) { return d.driverId === e.currentTarget.dataset.driver; });
-      if (row) openDriver(row);
+      go('journeys', { driverId: e.currentTarget.dataset.driver, day: todayISO() });
     });
   }
 
@@ -791,9 +797,10 @@ window.DRIVERS_VIEWS = (function () {
   // ── Review queue ───────────────────────────────────────────────────────
   // ── History ────────────────────────────────────────────────────────────
   //
-  // A driver's days. Business and personal are split by the restaurant rule:
+  // A driver's days. Business is split from the rest by the restaurant rule:
   // driving to a restaurant, and between restaurants and the depot, is
-  // business; driving that leads to no restaurant is personal. Each day opens
+  // business; driving that leads to no restaurant is undecided until someone
+  // marks it personal. Each day opens
   // into the full ride view, with the route and the reason for every stretch.
   var hist = { driverId: null, days: 30 };
 
@@ -819,7 +826,7 @@ window.DRIVERS_VIEWS = (function () {
         + '</select></div>'
         + '</div>'
         + '<p class="tiny" style="margin:0">Business is driving to a restaurant, and between restaurants and the depot. '
-        + 'Personal is driving that leads to no restaurant. Tap a day to see its route and why each stretch counted as it did.</p>'
+        + 'Driving that leads to no restaurant is undecided until the driver or the office marks it personal. Tap a day to see its whole journey.</p>'
         + '</div>'
         + '<div id="hBody">' + spinner('Loading history…') + '</div>');
       on('#hDriver', 'change', function (e) { hist.driverId = e.target.value; loadHistory(); });
@@ -879,7 +886,11 @@ window.DRIVERS_VIEWS = (function () {
           + '</tbody></table></div></div>';
       }
       document.getElementById('hBody').innerHTML = html;
-      on('tr[data-ride]', 'click', function (e) { openRide(e.currentTarget.dataset.ride); }, document.getElementById('hBody'));
+      // A day opens as its journey: the full route, stops and timeline.
+      on('tr[data-ride]', 'click', function (e) {
+        var d = h.days.find(function (x) { return x.rideId === e.currentTarget.dataset.ride; });
+        go('journeys', { driverId: hist.driverId, day: d ? d.dayKey : todayISO() });
+      }, document.getElementById('hBody'));
     }).catch(function (e) {
       var b = document.getElementById('hBody');
       if (b) b.innerHTML = errBox(e);
@@ -3176,5 +3187,14 @@ window.DRIVERS_VIEWS = (function () {
     render();
   });
 
-  return { renderTabs: renderTabs, render: render, go: go, state: state };
+  // For the Journeys page: the ride controls of one driver, and the
+  // technical ride view.
+  function openDriverControls(driverId) {
+    API.dashboard().then(function (d) {
+      var row = d.drivers.find(function (x) { return x.driverId === driverId; });
+      if (row) { state.dashboard = d; openDriver(row); }
+    }).catch(function (e) { alert(e.message); });
+  }
+
+  return { renderTabs: renderTabs, render: render, go: go, state: state, openRide: openRide, openDriverControls: openDriverControls };
 })();

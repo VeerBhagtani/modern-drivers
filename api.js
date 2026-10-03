@@ -173,9 +173,12 @@ window.DRIVERS_API = (function () {
     },
 
     reviewQueue: function (params) { return request(D + '/review/queue' + qs(params)); },
-    review: function (rideId, segmentId, toType, note) {
-      return request(D + '/rides/' + rideId + '/segments/' + segmentId + '/review', { method: 'POST', body: { toType: toType, note: note } });
+    review: function (rideId, segmentId, toType, note, placeId) {
+      var body = { toType: toType, note: note };
+      if (placeId) body.placeId = placeId;
+      return request(D + '/rides/' + rideId + '/segments/' + segmentId + '/review', { method: 'POST', body: body });
     },
+    journey: function (driverId, from, to) { return request(D + '/journey' + qs({ driverId: driverId, from: from, to: to || from })); },
     revertReview: function (reviewId) { return request(D + '/reviews/' + reviewId + '/revert', { method: 'POST', body: {} }); },
 
     report: function (name, params) { return request(D + '/reports/' + name + qs(params)); },
