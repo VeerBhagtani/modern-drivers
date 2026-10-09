@@ -2445,7 +2445,7 @@ window.DRIVERS_VIEWS = (function () {
     }).concat((m.unmatchedOrders || []).map(function (o) {
       return '<tr><td>' + (o.source === 'driver_plan' ? 'Planned stop' : 'Order') + '</td>'
         + '<td>' + esc(o.placeName || o.customerId || '—') + '</td>'
-        + '<td><span class="pill bad">missed — no visit</span></td></tr>';
+        + '<td><span class="pill bad">missed</span>' + (o.reason ? '<br><span class="tiny">' + esc(o.reason) + '</span>' : '') + '</td></tr>';
     }));
     if (!rows.length) return '<p class="muted">No planned stops or orders for this day. A round planned in the app lists its stops here automatically.</p>';
     return '<table style="margin-bottom:12px"><thead><tr><th>From</th><th>Restaurant</th><th>Result</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';

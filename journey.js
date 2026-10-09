@@ -25,6 +25,7 @@ window.DRIVERS_JOURNEY = (function () {
     BUSINESS: { label: 'Modern Dairy customer', color: '#0f7a4a', icon: '📍' },
     UNKNOWN: { label: 'Unknown stop', color: '#c98a12', icon: '❔' },
     PERSONAL: { label: 'Personal / excluded', color: '#7b4fa8', icon: '🚫' },
+    MISSED: { label: 'Missed delivery (under 2 min)', color: '#b3261e', icon: '✕' },
   };
   var KIND = { business: 'Modern Dairy business', personal: 'personal', unknown: 'unknown', gap: 'no GPS (estimated)' };
   var SPEEDS = [[1, 60], [2, 120], [5, 300], [10, 600]];   // × → ride seconds per real second
@@ -172,7 +173,7 @@ window.DRIVERS_JOURNEY = (function () {
       return;
     }
     // Totals across the rides shown.
-    var T = { measuredM: 0, gapEstimateM: 0, businessM: 0, unknownM: 0, personalM: 0, stops: 0, restaurantStops: 0, unknownStops: 0, timeAtStopsSec: 0, fixes: 0, fixesExcluded: 0 };
+    var T = { measuredM: 0, gapEstimateM: 0, businessM: 0, unknownM: 0, personalM: 0, stops: 0, restaurantStops: 0, unknownStops: 0, missedDeliveries: 0, timeAtStopsSec: 0, fixes: 0, fixesExcluded: 0 };
     var visited = {};
     rides.forEach(function (r) {
       var t = r.journey.totals;
@@ -210,6 +211,7 @@ window.DRIVERS_JOURNEY = (function () {
       + metric(String(T.stops), 'Stops')
       + metric(String(Object.keys(visited).length), 'Restaurants visited', 'ok')
       + metric(String(T.unknownStops), 'Unknown stops', T.unknownStops ? 'warn' : '')
+      + metric(String(T.missedDeliveries), 'Missed deliveries (under 2 min)', T.missedDeliveries ? 'bad' : 'ok')
       + metric(dur(T.timeAtStopsSec), 'Time at stops')
       + metric(hm(first.startedAt) + ' – ' + (active ? 'now' : hm(last.stoppedAt)), rides.length > 1 ? rides.length + ' rides' : 'Ride time')
       + '</div>'
@@ -270,6 +272,13 @@ window.DRIVERS_JOURNEY = (function () {
           + (s.needsReview ? ' <span class="pill warn">review</span>' : '')
           + '<br><span class="tiny">' + esc(c.label) + ' · ' + hm(s.arrivalTs) + '–' + (s.departureTs ? hm(s.departureTs) : 'now') + ' · ' + dur(s.durationSec)
           + (s.address && s.category !== 'MODERN_DAIRY' ? ' · ' + esc(s.address) : '') + '</span></span></li>';
+      }
+      if (e.kind === 'missed') {
+        return '<li class="' + cls + '" data-ev="' + i + '"><span class="jt">' + hm(e.ts) + '</span>'
+          + '<span class="jb"><span class="jdot" style="background:' + CAT.MISSED.color + '">✕</span>'
+          + '<b>Missed delivery: ' + esc(e.label) + '</b>'
+          + '<br><span class="tiny">Stopped only ' + e.durationSec + ' s (' + hm(e.ts) + '–' + hm(e.endTs) + ') — the minimum is '
+          + Math.round((e.minSec || 120) / 60) + ' min, so this is not a delivery</span></span></li>';
       }
       var label = e.kind === 'start' ? '🟢 Ride started' : e.kind === 'now' ? '📡 Latest position' : '🏁 Ride ended';
       return '<li class="' + cls + '" data-ev="' + i + '"><span class="jt">' + hm(e.ts) + '</span><span class="jb"><b>' + label + '</b>'
@@ -357,6 +366,12 @@ window.DRIVERS_JOURNEY = (function () {
         MAPS.pin(h, 'jstops', g, { label: g.items.map(function (i) { return st.stops[i].gn; }).join('·'), color: c.color, z: 950,
           title: g.items.map(function (i) { var s = st.stops[i]; return s.gn + '. ' + (s.label || CAT[s.category].label) + ' · ' + hm(s.arrivalTs) + '–' + (s.departureTs ? hm(s.departureTs) : 'now'); }).join('\n'),
           onClick: function () { if (g.items.length === 1) openStop(g.items[0]); else chooseStop(g.items); } });
+      });
+      // Halts too short to be a delivery: a red ✕ on the restaurant.
+      st.events.forEach(function (e) {
+        if (e.kind !== 'missed' || !e.at) return;
+        MAPS.pin(h, 'jmissed', e.at, { label: '✕', color: CAT.MISSED.color, z: 940,
+          title: 'Missed delivery: ' + e.label + ' — stopped only ' + e.durationSec + ' s at ' + hm(e.ts) + ' (minimum 2 min)' });
       });
       st.head = st.used.length ? MAPS.pin(h, 'jhead', st.used[0], { dot: 9, color: '#111827', title: 'Replay position', z: 1100 }) : null;
       MAPS.fit(h, all.filter(function (p) { return p.used; }).length ? all.filter(function (p) { return p.used; }) : all);
