@@ -116,9 +116,10 @@ window.DRIVERS_API = (function () {
     rides: function (params) { return request(D + '/rides' + qs(params)); },
     history: function (driverId, from, to) { return request(D + '/history' + qs({ driverId: driverId, from: from, to: to })); },
     ride: function (id, withPoints) { return request(D + '/rides/' + id + (withPoints ? '?points=1' : '')); },
-    stopRide: function (id, reason, emergency, stoppedByName) {
-      return request(D + '/rides/' + id + '/stop', { method: 'POST', body: { reason: reason, emergency: !!emergency, stoppedByName: stoppedByName } });
+    stopRide: function (id, reason, emergency, stoppedByName, driverId) {
+      return request(D + '/rides/' + id + '/stop', { method: 'POST', body: { reason: reason, emergency: !!emergency, stoppedByName: stoppedByName, driverId: driverId || undefined } });
     },
+    diagnostics: function (driverId) { return request(D + '/drivers/' + driverId + '/diagnostics'); },
     stopNames: function () { return request(D + '/stop-names'); },
     addStopName: function (name) { return request(D + '/stop-names', { method: 'POST', body: { name: name } }); },
     removeStopName: function (name) { return request(D + '/stop-names', { method: 'DELETE', body: { name: name } }); },

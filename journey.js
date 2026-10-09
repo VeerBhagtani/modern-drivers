@@ -87,7 +87,8 @@ window.DRIVERS_JOURNEY = (function () {
         + '<div><label for="jFrom">' + (st.range ? 'From' : 'Date') + '</label><input type="date" id="jFrom" value="' + esc(st.from) + '"></div>'
         + (st.range ? '<div><label for="jTo">To</label><input type="date" id="jTo" value="' + esc(st.to) + '"></div>' : '')
         + '<label style="display:flex;gap:6px;align-items:center;font-size:.85rem;margin-bottom:8px"><input type="checkbox" id="jRange" style="width:auto"' + (st.range ? ' checked' : '') + '> Date range</label>'
-        + '<button class="btn-outline btn-sm" id="jControls" style="margin-bottom:6px">Ride controls…</button>'
+        + '<button class="btn-outline btn-sm" id="jControls" style="margin-bottom:6px">Ride controls…</button> '
+        + '<button class="btn-outline btn-sm" id="jDiag" style="margin-bottom:6px">Tracking diagnostics</button>'
         + '</div></div>'
         + '<div id="jBody"><p class="muted">Loading the journey…</p></div>';
       $('jDriver').addEventListener('change', function (e) { st.driverId = e.target.value; load(); });
@@ -97,6 +98,9 @@ window.DRIVERS_JOURNEY = (function () {
       $('jFrom').addEventListener('change', function (e) { st.from = e.target.value; if (!st.range || st.to < st.from) st.to = st.from; load(); });
       if ($('jTo')) $('jTo').addEventListener('change', function (e) { st.to = e.target.value < st.from ? st.from : e.target.value; load(); });
       $('jRange').addEventListener('change', function (e) { st.range = e.target.checked; if (!st.range) st.to = st.from; render(); });
+      $('jDiag').addEventListener('click', function () {
+        if (window.DRIVERS_VIEWS && window.DRIVERS_VIEWS.openDiagnostics) window.DRIVERS_VIEWS.openDiagnostics(st.driverId);
+      });
       $('jControls').addEventListener('click', function () {
         if (window.DRIVERS_VIEWS && window.DRIVERS_VIEWS.openDriverControls) window.DRIVERS_VIEWS.openDriverControls(st.driverId);
       });
@@ -187,17 +191,19 @@ window.DRIVERS_JOURNEY = (function () {
     var live = data.live;
 
     var html = '';
-    if (active && live) {
-      var age = live.deviceTs ? Math.round((Date.now() - live.deviceTs) / 1000) : null;
-      var fresh = age != null && age <= (data.staleAfterSec || 180);
+    // The server's verdict (drivers/trackingStatus.js), never this browser's
+    // clock against the phone's.
+    var trk = data.tracking;
+    if (active && trk) {
+      var TP = { LIVE: 'live', SYNC_PENDING: 'warn', STALE: 'warn' };
       var cur = st.stops.length && st.stops[st.stops.length - 1].departureTs == null ? st.stops[st.stops.length - 1] : null;
+      var ll = trk.lastLocation;
       html += '<div class="card jlive">'
-        + '<span class="pill ' + (fresh ? 'live' : 'warn') + '">' + (fresh ? 'LIVE' : 'LAST KNOWN') + '</span> '
-        + '<b>Ride running.</b> Last GPS ' + hms(live.deviceTs) + (age != null ? ' (' + (age < 90 ? age + ' s' : Math.round(age / 60) + ' min') + ' ago)' : '')
-        + (live.speedMps != null ? ' · ' + Math.round(live.speedMps * 3.6) + ' km/h' : '')
-        + (live.accuracyM != null ? ' · ±' + live.accuracyM + ' m' : '')
-        + (live.batteryPct != null ? ' · battery ' + live.batteryPct + '%' : '')
-        + (cur ? ' · <b>stopped at ' + esc(cur.label) + '</b> since ' + hm(cur.arrivalTs) : ' · moving')
+        + '<span class="pill ' + (TP[trk.state] || 'bad') + '">' + esc(trk.label.toUpperCase()) + '</span> '
+        + '<b>Ride running.</b> ' + esc(trk.detail)
+        + (ll && live ? (live.speedMps != null ? ' · ' + Math.round(live.speedMps * 3.6) + ' km/h' : '')
+          + (live.batteryPct != null ? ' · battery ' + live.batteryPct + '%' : '') : '')
+        + (cur ? ' · <b>stopped at ' + esc(cur.label) + '</b> since ' + hm(cur.arrivalTs) : '')
         + ' · <span class="tiny">refreshes every 30 s</span></div>';
     }
     if (live && live.queuedPoints) {

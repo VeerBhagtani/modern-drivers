@@ -128,19 +128,11 @@ window.DRIVERS_VIEWS = (function () {
       var facilities = r[2];
       state.dashboard = d;
       state.staleAfterSec = d.staleAfterSec;
+      lastGoodAt = Date.now();
       var m = d.metrics;
       set(''
-        + '<div class="grid metrics" style="margin-bottom:14px">'
-        + metric(m.activeDrivers, 'Drivers on a ride', 'ok')
-        + metric(m.completedRides, 'Rides finished today')
-        + metric(km(m.totalKm), 'Total tracked today')
-        + metric(km(m.businessKm), 'Business today', 'ok')
-        + metric(km(m.personalKm), 'Personal today')
-        + metric(km(m.unknownKm), 'Unknown — needs review', m.unknownKm > 0 ? 'warn' : '')
-        + metric(m.trackingIssues, 'Tracking problems', m.trackingIssues ? 'bad' : '')
-        + metric(m.openAlerts, 'Open alerts', m.openAlerts ? 'warn' : '')
-        + metric(m.unprocessedRides, 'Rides not calculated', m.unprocessedRides ? 'warn' : '')
-        + '</div>'
+        + '<div class="grid metrics" id="fleetMetrics" style="margin-bottom:14px">' + fleetMetrics(m) + '</div>'
+        + '<p class="tiny" id="fleetConn" style="margin:-6px 0 10px">Updated ' + esc(secs(Date.now())) + ' · refreshes every ' + refreshSec() + ' s</p>'
         + (d.depot && d.depot.warning ? '<div class="banner">' + esc(d.depot.warning) + '</div>' : '')
         + (m.unprocessedRides
           ? '<div class="banner">' + m.unprocessedRides + ' finished ride(s) today have not been calculated yet, so their kilometres are not in the totals above. They are processed automatically, or you can run it now from Settings.</div>'
@@ -156,7 +148,7 @@ window.DRIVERS_VIEWS = (function () {
         }).join('') + '</select></div>'
         + '    </div>'
         + '    <div style="overflow-x:auto">' + fleetTable(d.drivers) + '</div>'
-        + '    <p class="tiny" style="margin-top:10px">A position is called <b>live</b> only if it arrived in the last ' + d.staleAfterSec + ' seconds. Anything older is labelled <b>last known</b>.</p>'
+        + '    <p class="tiny" style="margin-top:10px">A driver is <b>Live</b> only if their latest GPS fix is under ' + (d.liveAfterSec || 60) + ' seconds old. Otherwise the status says what is known: GPS off, internet lost, fixes waiting on the phone, or nothing heard. Click a driver for their journey and <b>Tracking diagnostics</b>.</p>'
         + '  </div>'
         + '  <div class="card">'
         + '    <h2>Live map</h2>'
@@ -277,25 +269,48 @@ window.DRIVERS_VIEWS = (function () {
     });
   }
 
+  // Tracking states (backend drivers/trackingStatus.js) → pill colour.
+  var TRACK_PILL = {
+    LIVE: 'live', SYNC_PENDING: 'warn', STALE: 'warn', SERVICE_INTERRUPTED: 'bad', GPS_UNAVAILABLE: 'bad',
+    INTERNET_DISCONNECTED: 'bad', UNKNOWN: 'idle', RIDE_STOPPED: 'idle', NOT_STARTED: 'idle',
+  };
+  function secs(ms) { return ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'; }
+  // Today's kilometres, with what the figure is: never a bare zero.
+  function todayCell(t) {
+    if (t.calcState === 'no_gps') return '<span class="tiny">no GPS received yet</span>';
+    if (!t.calculated) {
+      return t.calcState === 'failed'
+        ? '<span class="pill bad">calculation failed</span><br><span class="tiny">' + esc(t.calcError || '') + '</span>'
+        : '<span class="tiny">' + t.points + ' fixes received · calculating…</span>';
+    }
+    var head = km(t.totalKm) + '<br><span class="tiny">' + km(t.businessKm) + ' business · ' + km(t.personalKm) + ' personal'
+      + (t.unknownKm ? ' · ' + km(t.unknownKm) + ' undecided' : '') + '</span>';
+    var when = t.calculatedAt ? 'calculated ' + time(t.calculatedAt) : '';
+    if (t.calcState === 'failed') return head + '<br><span class="pill warn">out of date</span> <span class="tiny">last calculation failed; ' + esc(when) + '</span>';
+    if (t.calcState === 'awaiting') return head + '<br><span class="tiny">' + esc(when) + ' · new fixes arriving, updates shortly</span>';
+    return head + '<br><span class="tiny">' + esc(when) + '</span>';
+  }
+
   function fleetTable(rows) {
     var list = filteredDrivers(rows);
     if (!list.length) return '<p class="muted">No drivers match.</p>';
     return '<table><thead><tr>'
-      + '<th>Driver</th><th>Ride</th><th>Position</th><th>Updated</th><th>Health</th><th>Today</th>'
+      + '<th>Driver</th><th>Ride</th><th>Tracking</th><th>Last location</th><th>Today</th>'
       + '</tr></thead><tbody>'
       + list.map(function (r) {
-        var today = !r.today.calculated
-          ? '<span class="tiny">not calculated</span>'
-          : km(r.today.totalKm) + '<br><span class="tiny">' + km(r.today.businessKm) + ' business · ' + km(r.today.personalKm) + ' personal'
-            + (r.today.unknownKm ? ' · ' + km(r.today.unknownKm) + ' undecided' : '') + '</span>';
+        var today = todayCell(r.today);
+        var tr = r.tracking || { state: 'UNKNOWN', label: 'Unknown', detail: '' };
         return '<tr class="click" data-driver="' + esc(r.driverId) + '" data-ride="' + esc(r.rideId || '') + '">'
           + '<td><b>' + esc(r.name) + '</b><br><span class="tiny">' + esc(r.driverCode) + (r.status !== 'active' ? ' · inactive' : '') + '</span></td>'
           + '<td><span class="pill ' + esc(r.rideStatus === 'active' ? 'active' : 'idle') + '">' + esc(r.rideStatus.replace('_', ' ')) + '</span>'
           + (r.rideStartedAt ? '<br><span class="tiny">from ' + time(r.rideStartedAt) + '</span>' : '')
           + (r.roundName ? '<br><span class="tiny"><b>' + esc(r.roundName) + '</b></span>' : '') + '</td>'
-          + '<td><span class="pill ' + esc(r.locationState) + '">' + esc(r.locationState === 'live' ? 'live' : r.locationState === 'stale' ? 'last known' : 'none') + '</span></td>'
-          + '<td>' + esc(ago(r.lastUpdateAgeSec)) + '</td>'
-          + '<td><span class="pill ' + esc(r.trackingHealth) + '">' + esc(r.trackingHealth.replace('_', ' ')) + '</span></td>'
+          + '<td><span class="pill ' + esc(TRACK_PILL[tr.state] || 'idle') + '" title="' + esc(tr.detail) + '">' + esc(tr.label) + '</span>'
+          + '<br><span class="tiny">' + esc(tr.detail) + '</span></td>'
+          + '<td>' + (r.lastUpdateAt
+            ? 'fix ' + esc(secs(r.lastUpdateAt)) + '<br><span class="tiny">' + esc(ago(r.lastUpdateAgeSec)) + ' ago'
+              + (r.lastReceivedAt ? ' · received ' + esc(secs(r.lastReceivedAt)) : '') + '</span>'
+            : '<span class="tiny">none</span>') + '</td>'
           + '<td>' + today + '</td>'
           + '</tr>';
       }).join('')
@@ -310,19 +325,52 @@ window.DRIVERS_VIEWS = (function () {
     });
   }
 
+  function fleetMetrics(m) {
+    return metric(m.activeDrivers, 'Drivers on a ride', 'ok')
+      + metric(m.completedRides, 'Rides finished today')
+      + metric(km(m.totalKm), 'Total tracked today')
+      + metric(km(m.businessKm), 'Business today', 'ok')
+      + metric(km(m.personalKm), 'Personal today')
+      + metric(km(m.unknownKm), 'Unknown — needs review', m.unknownKm > 0 ? 'warn' : '')
+      + metric(m.trackingIssues, 'Drivers on a ride, not live', m.trackingIssues ? 'bad' : '')
+      + metric(m.openAlerts, 'Open alerts', m.openAlerts ? 'warn' : '')
+      + metric(m.unprocessedRides, 'Rides not calculated', m.unprocessedRides ? 'warn' : '');
+  }
+  function refreshSec() { return (window.DRIVERS_CONFIG || {}).REFRESH_SEC || 20; }
+
+  /* The office screen keeps itself current by asking the server every
+   * REFRESH_SEC: the database is the truth, not this page. One timer only
+   * (cleared before it is set again), stopped when the page changes. A failed
+   * request is retried and SAID: the drivers' states shown are then as old as
+   * the line says, and a lost connection here is the office's, not a
+   * driver's — it never turns a driver offline. */
   var refreshTimer = null;
+  var lastGoodAt = null;
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
+    if (!lastGoodAt) lastGoodAt = Date.now();
     refreshTimer = setTimeout(function () {
       if (state.tab !== 'fleet' || !state.map) return;
+      var conn = document.getElementById('fleetConn');
       API.dashboard().then(function (d) {
+        if (state.tab !== 'fleet') return;
         state.dashboard = d;
+        lastGoodAt = Date.now();
         MAPS.syncMarkers({ map: state.map, markers: state.markers }, d.drivers, openDriver);
         var holder = document.querySelector('#view .split .card div[style*="overflow-x"]');
         if (holder) { holder.innerHTML = fleetTable(d.drivers); bindFleetRows(); }
+        var mEl = document.getElementById('fleetMetrics');
+        if (mEl) mEl.innerHTML = fleetMetrics(d.metrics);
+        if (conn) { conn.className = 'tiny'; conn.textContent = 'Updated ' + secs(lastGoodAt) + ' · refreshes every ' + refreshSec() + ' s'; }
         scheduleRefresh();
-      }).catch(scheduleRefresh);
-    }, ((window.DRIVERS_CONFIG || {}).REFRESH_SEC || 20) * 1000);
+      }).catch(function (e) {
+        if (conn) {
+          conn.className = 'tiny err';
+          conn.textContent = 'This screen cannot reach the server (' + (e && e.message ? e.message : 'network error') + '). Retrying — what is shown is from ' + secs(lastGoodAt) + '.';
+        }
+        scheduleRefresh();
+      });
+    }, refreshSec() * 1000);
   }
 
   // ── Driver / ride detail ───────────────────────────────────────────────
@@ -337,6 +385,7 @@ window.DRIVERS_VIEWS = (function () {
           + '<p class="muted">Started ' + dateTime(row.rideStartedAt) + ' · last position ' + esc(ago(row.lastUpdateAgeSec)) + ' ago'
           + ' (<b>' + esc(row.locationState === 'live' ? 'live' : 'last known, NOT live') + '</b>)</p>'
           + '<button class="btn-danger btn-sm" id="btnStop">Stop this ride</button> '
+          + '<button class="btn-outline btn-sm" id="btnDiag">Tracking diagnostics</button> '
           + '<button class="btn-outline btn-sm" id="btnEmergency">Emergency stop</button>'
           + '<p class="tiny" style="margin-top:8px">The driver cannot stop a ride from the app. Every stop records who did it, when, and why.</p>'
           + '</div>';
@@ -357,8 +406,9 @@ window.DRIVERS_VIEWS = (function () {
       var root = document.getElementById('modal');
       on('#btnCloseModal', 'click', closeModal, root);
       on('[data-openride]', 'click', function (e) { openRide(e.currentTarget.dataset.openride); }, root);
-      on('#btnStop', 'click', function () { promptStop(row.rideId, false); }, root);
-      on('#btnEmergency', 'click', function () { promptStop(row.rideId, true); }, root);
+      on('#btnStop', 'click', function () { promptStop(row.rideId, false, row); }, root);
+      on('#btnDiag', 'click', function () { openDiagnostics(row.driverId); }, root);
+      on('#btnEmergency', 'click', function () { promptStop(row.rideId, true, row); }, root);
     }).catch(function (e) {
       modal(errBox(e) + '<button class="btn-outline" id="btnCloseModal">Close</button>');
       on('#btnCloseModal', 'click', closeModal, document.getElementById('modal'));
@@ -370,8 +420,11 @@ window.DRIVERS_VIEWS = (function () {
   var USUAL_STOP_REASON = 'End of shift — driver returned to Modern Dairy';
   var LAST_STOPPER = 'md_last_stopper';
 
-  function promptStop(rideId, emergency) {
-    modal('<h3>' + (emergency ? 'Emergency stop' : 'Stop this ride') + '</h3>'
+  function promptStop(rideId, emergency, who) {
+    // The driver is named on the dialog, and sent with the request: a ride id
+    // from a screen left open is refused by the server if it is not theirs.
+    var name = who && who.name ? who.name : null;
+    modal('<h3>' + (emergency ? 'Emergency stop' : 'Stop this ride') + (name ? ' — ' + esc(name) : '') + '</h3>'
       + '<p class="muted">The reason and who stopped it are recorded in the audit log. Both are required.</p>'
       + '<div class="field"><label for="stopReason">Reason</label>'
       + '<input id="stopReason" placeholder="' + esc(USUAL_STOP_REASON) + '" autocomplete="off">'
@@ -432,7 +485,7 @@ window.DRIVERS_VIEWS = (function () {
       if (!by || by === ADD) { showErr('Choose who is stopping this ride.'); return; }
       try { localStorage.setItem(LAST_STOPPER, by); } catch (e) { /* private window */ }
       document.getElementById('stopGo').disabled = true;
-      API.stopRide(rideId, reason, emergency, by).then(function () { closeModal(); render(); })
+      API.stopRide(rideId, reason, emergency, by, who && who.driverId).then(function () { closeModal(); render(); })
         .catch(function (e) { showErr(e.message); document.getElementById('stopGo').disabled = false; });
     }, root);
     reasonEl.focus();
@@ -2935,6 +2988,14 @@ window.DRIVERS_VIEWS = (function () {
       'Lower: a phone sitting at a restaurant invents hundreds of metres. Higher: slow crawling traffic stops being counted.'],
     gapSeconds: ['A silence longer than this is a tracking gap, not travel',
       'Distance across a gap is reported separately as an estimate and never counted as measured.'],
+    liveLocationSec: ['A driver is Live only while their latest GPS fix is younger than this',
+      'Seconds. Older than this, the status says what is known instead: GPS off, internet lost, fixes waiting on the phone, or nothing heard.'],
+    uploadIntervalSec: ['How often the app sends its positions during a ride',
+      'Seconds. Lower keeps the map fresher and uses a little more mobile data. Reaches every phone within a minute.'],
+    healthIntervalSec: ['How often the app reports its own state when it has nothing to send',
+      'Seconds. Permission, GPS switch, waiting positions. A report older than twice this is treated as out of date.'],
+    calcRefreshSec: ['How old a running ride\'s kilometres may get before they are recalculated',
+      'Seconds. Recalculation reads only the new positions, so a lower value costs little.'],
     spikeMinM: ['A fix this far off the road that comes straight back is a GPS spike, not a trip',
       'Metres. The fix is kept on the map but adds no distance. Lower: a real U-turn on a sparse track may be dropped. Higher: spikes in slow traffic become kilometres.'],
     stopRadiusM: ['How tightly the phone must stay put for it to count as a stop', ''],
@@ -3191,6 +3252,70 @@ window.DRIVERS_VIEWS = (function () {
 
   // For the Journeys page: the ride controls of one driver, and the
   // technical ride view.
+  /* Tracking diagnostics for one driver: what the server saw, what the phone
+   * reported (and how long ago), and the most likely cause. Green only for
+   * what is current and complete. */
+  function openDiagnostics(driverId) {
+    modal(spinner('Loading diagnostics…'));
+    API.diagnostics(driverId).then(function (g) {
+      var now = g.generatedAt;
+      var ageTxt = function (ms) { return ms ? secs(ms) + ' (' + ago(Math.round((now - ms) / 1000)) + ' ago)' : '—'; };
+      var yes = function (v, good, bad) { return v == null ? '<span class="pill idle">not reported</span>' : v ? '<span class="pill ok">' + good + '</span>' : '<span class="pill bad">' + bad + '</span>'; };
+      var row = function (k, v) { return '<tr><th>' + esc(k) + '</th><td>' + v + '</td></tr>'; };
+      var t = g.tracking; var sv = g.server; var dv = g.device;
+      var html = '<h3 style="margin:0 0 4px">Tracking diagnostics — ' + esc(g.driver.name) + '</h3>'
+        + '<p class="tiny" style="margin:0 0 12px">' + esc(g.driver.driverCode || '') + ' · as of ' + esc(secs(now)) + '</p>'
+        + '<div class="card" style="margin-bottom:12px"><span class="pill ' + esc(TRACK_PILL[t.state] || 'idle') + '">' + esc(t.label) + '</span>'
+        + '<p style="margin:8px 0 0"><b>Most likely:</b> ' + esc(g.explanation) + '</p></div>'
+        + '<div class="card" style="margin-bottom:12px"><h2>Ride</h2><table class="kv">'
+        + (g.ride ? row('Ride ID', '<code>' + esc(g.ride.id) + '</code>')
+          + row('Status', esc(g.ride.status) + (g.ride.stoppedAt ? ' · stopped ' + esc(dateTime(g.ride.stoppedAt)) + (g.ride.stopReason ? ' — ' + esc(g.ride.stopReason) : '') : ''))
+          + row('Started', esc(dateTime(g.ride.startedAt)))
+          : row('Ride', 'No ride today'))
+        + '</table></div>'
+        + '<div class="card" style="margin-bottom:12px"><h2>Seen by the server</h2><table class="kv">'
+        + row('Last GPS fix taken', esc(ageTxt(sv.lastFixAt)) + (sv.lastFixAccuracyM != null ? ' · ±' + Math.round(sv.lastFixAccuracyM) + ' m' : ''))
+        + row('Last fix received', esc(ageTxt(sv.lastFixReceivedAt)))
+        + row('Last upload of any kind', esc(ageTxt(sv.lastUploadAt)))
+        + row('Last contact from the phone', esc(ageTxt(sv.lastContactAt)))
+        + row('GPS points stored', String(sv.pointsStored))
+        + row('Phone clock error', sv.phoneClockErrorMs ? '<span class="pill warn">' + Math.round(sv.phoneClockErrorMs / 60000) + ' min — corrected</span>' : 'none detected')
+        + row('Distance last calculated', sv.calculatedAt ? esc(ageTxt(sv.calculatedAt)) + (sv.awaitingCalculation ? ' · <span class="pill warn">new fixes since</span>' : ' · <span class="pill ok">up to date</span>') : (sv.pointsStored ? '<span class="pill warn">not yet</span>' : '—'))
+        + row('Last calculation error', sv.calcFailedAt && (!sv.calculatedAt || sv.calcFailedAt > sv.calculatedAt) ? '<span class="pill bad">' + esc(ageTxt(sv.calcFailedAt)) + '</span> ' + esc(sv.calcError || '') : 'none')
+        + row('Distance', sv.km ? esc(sv.km.measured.toFixed(1)) + ' km measured · ' + esc(sv.km.business.toFixed(1)) + ' business · ' + esc(sv.km.unknown.toFixed(1)) + ' unknown · ' + esc(sv.km.personal.toFixed(1)) + ' personal'
+          + (sv.km.gapEstimate ? ' · ' + esc(sv.km.gapEstimate.toFixed(1)) + ' across gaps (estimate)' : '') + (sv.km.reconciled ? '' : ' · <span class="pill bad">does not reconcile</span>') : '—')
+        + row('Fixes left out of distance', sv.fixesExcluded == null ? '—' : String(sv.fixesExcluded) + (sv.excludedByReason ? ' <span class="tiny">' + esc(Object.keys(sv.excludedByReason).map(function (k) { return k.replace(/_/g, ' ') + ' ' + sv.excludedByReason[k]; }).join(', ')) + '</span>' : ''))
+        + '</table></div>'
+        + '<div class="card" style="margin-bottom:12px"><h2>Reported by the phone</h2>'
+        + (dv ? '<p class="tiny" style="margin-top:0">Report received ' + esc(ageTxt(dv.reportedAt)) + (now - dv.reportedAt > 3 * 60000 ? ' — <b>old: the phone has not reported since</b>' : '') + '. The server cannot see the phone; this is what the phone said.</p><table class="kv">'
+          + row('Location permission', dv.locationPermission ? (dv.locationPermission === 'granted' ? '<span class="pill ok">granted</span>' : '<span class="pill bad">' + esc(dv.locationPermission) + '</span>') : '<span class="pill idle">not reported</span>')
+          + row('Phone location switch', yes(dv.gpsEnabled, 'on', 'off'))
+          + row('Location recorder', yes(dv.watcherRunning, 'running', 'not running'))
+          + row('Last fix on the phone', esc(ageTxt(dv.lastFixAt)) + (dv.lastFixAccuracyM != null ? ' · ±' + Math.round(dv.lastFixAccuracyM) + ' m' : ''))
+          + row('Waiting to upload', dv.queuedPoints == null ? '—' : String(dv.queuedPoints) + (dv.oldestQueuedAt ? ' · oldest ' + esc(secs(dv.oldestQueuedAt)) : ''))
+          + row('Last successful upload', esc(ageTxt(dv.lastUploadOkAt)))
+          + row('Last upload error', dv.lastUploadError ? '<span class="pill bad">' + esc(dv.lastUploadError) + '</span>' + (dv.uploadFailures ? ' · ' + dv.uploadFailures + ' in a row' : '') : 'none')
+          + row('Signed in', dv.authError ? '<span class="pill bad">' + esc(dv.authError) + '</span>' : '<span class="pill ok">yes</span>')
+          + row('Internet (phone says)', yes(dv.online, 'online', 'offline'))
+          + row('Battery optimisation', dv.batteryOptimised == null ? '<span class="pill idle">not reported</span>' : dv.batteryOptimised ? '<span class="pill warn">restricted — may stop in background</span>' : '<span class="pill ok">exempt</span>')
+          + row('Battery', dv.batteryPct == null ? '—' : dv.batteryPct + '%')
+          + row('App version', esc(dv.appVersion || '—'))
+          + '</table>'
+          : '<p class="muted">The phone has never reported its state (an older app version, or it has not been able to reach the server).</p>')
+        + '</div>'
+        + '<div class="card" style="margin-bottom:12px"><h2>This screen</h2><p class="tiny" style="margin:0">Office connection: ' + (lastGoodAt ? 'last good update ' + esc(secs(lastGoodAt)) : 'ok') + '. This is the dashboard\'s own link to the server, not the driver\'s.</p></div>'
+        + (g.events.length ? '<div class="card" style="margin-bottom:12px"><h2>Recent events on this ride</h2><table><tbody>'
+          + g.events.map(function (e) { return '<tr><td class="tiny">' + esc(secs(e.at)) + '</td><td>' + esc(e.kind.replace(/_/g, ' ')) + '</td><td class="tiny">' + esc(JSON.stringify(e.detail || {}).slice(0, 160)) + '</td></tr>'; }).join('')
+          + '</tbody></table></div>' : '')
+        + '<button class="btn-outline" id="diagClose">Close</button>';
+      modal(html);
+      on('#diagClose', 'click', closeModal, document.getElementById('modal'));
+    }).catch(function (e) {
+      modal(errBox(e) + '<button class="btn-outline" id="diagClose">Close</button>');
+      on('#diagClose', 'click', closeModal, document.getElementById('modal'));
+    });
+  }
+
   function openDriverControls(driverId) {
     API.dashboard().then(function (d) {
       var row = d.drivers.find(function (x) { return x.driverId === driverId; });
@@ -3198,5 +3323,5 @@ window.DRIVERS_VIEWS = (function () {
     }).catch(function (e) { alert(e.message); });
   }
 
-  return { renderTabs: renderTabs, render: render, go: go, state: state, openRide: openRide, openDriverControls: openDriverControls };
+  return { renderTabs: renderTabs, render: render, go: go, state: state, openRide: openRide, openDriverControls: openDriverControls, openDiagnostics: openDiagnostics };
 })();
