@@ -26,6 +26,7 @@ window.DRIVERS_JOURNEY = (function () {
     UNKNOWN: { label: 'Unknown stop', color: '#c98a12', icon: '❔' },
     PERSONAL: { label: 'Personal / excluded', color: '#7b4fa8', icon: '🚫' },
     MISSED: { label: 'Missed delivery (under 2 min)', color: '#b3261e', icon: '✕' },
+    PASSED: { label: 'Restaurant passed, not in plan', color: '#667085', icon: '›' },
   };
   var KIND = { business: 'Modern Dairy business', personal: 'personal', unknown: 'unknown', gap: 'no GPS (estimated)' };
   var SPEEDS = [[1, 60], [2, 120], [5, 300], [10, 600]];   // × → ride seconds per real second
@@ -140,7 +141,7 @@ window.DRIVERS_JOURNEY = (function () {
 
   // ── merge the rides of the range into one story ─────────────────────────
   function merge(data) {
-    var pts = []; var stops = []; var segments = []; var events = [];
+    var pts = []; var stops = []; var segments = []; var events = []; var notInPlan = [];
     data.rides.forEach(function (r, ri) {
       var j = r.journey;
       var base = stops.length;
@@ -150,6 +151,7 @@ window.DRIVERS_JOURNEY = (function () {
         segments.push(Object.assign({}, g, { ri: ri, rideId: r.ride.id,
           fromN: g.from.n ? base + g.from.n : null, toN: g.to.n ? base + g.to.n : null }));
       });
+      (j.notInPlan || []).forEach(function (x) { notInPlan.push(Object.assign({ ri: ri }, x, x.stop ? { gn: base + x.stop } : {})); });
       if (data.rides.length > 1) events.push({ kind: 'ride', ts: r.ride.startedAt, label: 'Ride ' + (ri + 1) + ' · ' + dayLabel(r.ride.dayKey) + (r.ride.roundName ? ' · ' + r.ride.roundName : ''), ri: ri });
       j.events.forEach(function (e) {
         var x = Object.assign({ ri: ri, rideId: r.ride.id }, e);
@@ -158,13 +160,13 @@ window.DRIVERS_JOURNEY = (function () {
         events.push(x);
       });
     });
-    return { pts: pts, stops: stops, segments: segments, events: events };
+    return { pts: pts, stops: stops, segments: segments, events: events, notInPlan: notInPlan };
   }
 
   // ── the page ───────────────────────────────────────────────────────────
   function draw(data) {
     var m = merge(data);
-    st.pts = m.pts; st.stops = m.stops; st.segments = m.segments; st.events = m.events;
+    st.pts = m.pts; st.stops = m.stops; st.segments = m.segments; st.events = m.events; st.notInPlan = m.notInPlan;
     st.used = m.pts.filter(function (p) { return p.used; });
     var rides = data.rides;
     var body = $('jBody');
@@ -211,7 +213,8 @@ window.DRIVERS_JOURNEY = (function () {
       + metric(String(T.stops), 'Stops')
       + metric(String(Object.keys(visited).length), 'Restaurants visited', 'ok')
       + metric(String(T.unknownStops), 'Unknown stops', T.unknownStops ? 'warn' : '')
-      + metric(String(T.missedDeliveries), 'Missed deliveries (under 2 min)', T.missedDeliveries ? 'bad' : 'ok')
+      + metric(String(T.missedDeliveries), 'Missed deliveries (planned, under 2 min)', T.missedDeliveries ? 'bad' : 'ok')
+      + (st.notInPlan.length ? metric(String(st.notInPlan.length), 'Restaurants not in plan (passed / extra)') : '')
       + metric(dur(T.timeAtStopsSec), 'Time at stops')
       + metric(hm(first.startedAt) + ' – ' + (active ? 'now' : hm(last.stoppedAt)), rides.length > 1 ? rides.length + ' rides' : 'Ride time')
       + '</div>'
@@ -237,6 +240,7 @@ window.DRIVERS_JOURNEY = (function () {
       + '</div>'
       + '<div class="card jtimeline"><h2 style="margin-top:0">Journey timeline</h2><div id="jEvents">' + timelineHtml() + '</div></div>'
       + '</div>'
+      + notInPlanHtml()
       + segmentsHtml()
       + stopsHtml()
       + rides.map(function (r, i) {
@@ -280,11 +284,32 @@ window.DRIVERS_JOURNEY = (function () {
           + '<br><span class="tiny">Stopped only ' + e.durationSec + ' s (' + hm(e.ts) + '–' + hm(e.endTs) + ') — the minimum is '
           + Math.round((e.minSec || 120) / 60) + ' min, so this is not a delivery</span></span></li>';
       }
+      if (e.kind === 'passed') {
+        return '<li class="' + cls + '" data-ev="' + i + '"><span class="jt">' + hm(e.ts) + '</span>'
+          + '<span class="jb"><span class="jdot" style="background:' + CAT.PASSED.color + '">›</span>'
+          + 'Passed ' + esc(e.label) + ' <span class="tiny">(not in plan)</span>'
+          + '<br><span class="tiny">Slowed ' + e.durationSec + ' s beside it — not a delivery, not missed</span></span></li>';
+      }
       var label = e.kind === 'start' ? '🟢 Ride started' : e.kind === 'now' ? '📡 Latest position' : '🏁 Ride ended';
       return '<li class="' + cls + '" data-ev="' + i + '"><span class="jt">' + hm(e.ts) + '</span><span class="jb"><b>' + label + '</b>'
         + (e.label ? '<br><span class="tiny">' + esc(e.label) + '</span>' : '')
         + (e.kind !== 'start' && e.totalM != null ? '<br><span class="tiny">' + kmTxt(e.totalM) + ' travelled</span>' : '') + '</span></li>';
     }).join('') + '</ol>';
+  }
+
+  // Restaurants that were not on the day's round: passed on the way, or
+  // visited extra. Never missed deliveries; listed so the office sees them.
+  function notInPlanHtml() {
+    if (!st.notInPlan.length) return '';
+    return '<div class="card"><h2 style="margin-top:0">Restaurants not in today\'s plan</h2>'
+      + '<p class="tiny" style="margin-top:0">Only restaurants in the planned round (or office orders for this driver) can be missed. These were not, so they are shown here instead.</p>'
+      + '<div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Restaurant</th><th>How long</th><th>What it was</th></tr></thead><tbody>'
+      + st.notInPlan.map(function (x) {
+        return '<tr><td>' + hm(x.startTs) + '</td><td>' + esc(x.placeName || 'Restaurant') + (x.gn ? ' <span class="tiny">stop ' + x.gn + '</span>' : '') + '</td>'
+          + '<td>' + dur(x.durationSec || 0) + '</td>'
+          + '<td>' + (x.kind === 'visited' ? '<span class="pill warn">extra visit</span> <span class="tiny">2 min or more, not planned</span>'
+            : '<span class="pill">passed by</span> <span class="tiny">under 2 min — not a delivery, not missed</span>') + '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
   }
 
   function where(x) { return x.label + (x.n ? ' (stop ' + x.n + ')' : ''); }
@@ -372,6 +397,12 @@ window.DRIVERS_JOURNEY = (function () {
         if (e.kind !== 'missed' || !e.at) return;
         MAPS.pin(h, 'jmissed', e.at, { label: '✕', color: CAT.MISSED.color, z: 940,
           title: 'Missed delivery: ' + e.label + ' — stopped only ' + e.durationSec + ' s at ' + hm(e.ts) + ' (minimum 2 min)' });
+      });
+      // Restaurants passed on the way, not in the plan: a small grey mark.
+      st.events.forEach(function (e) {
+        if (e.kind !== 'passed' || !e.at) return;
+        MAPS.pin(h, 'jpassed', e.at, { label: '›', color: CAT.PASSED.color, z: 930,
+          title: 'Passed ' + e.label + ' (not in plan) — ' + e.durationSec + ' s at ' + hm(e.ts) });
       });
       st.head = st.used.length ? MAPS.pin(h, 'jhead', st.used[0], { dot: 9, color: '#111827', title: 'Replay position', z: 1100 }) : null;
       MAPS.fit(h, all.filter(function (p) { return p.used; }).length ? all.filter(function (p) { return p.used; }) : all);
