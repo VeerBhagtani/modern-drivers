@@ -3291,6 +3291,7 @@ window.DRIVERS_VIEWS = (function () {
           + row('Location permission', dv.locationPermission ? (dv.locationPermission === 'granted' ? '<span class="pill ok">granted</span>' : '<span class="pill bad">' + esc(dv.locationPermission) + '</span>') : '<span class="pill idle">not reported</span>')
           + row('Phone location switch', yes(dv.gpsEnabled, 'on', 'off'))
           + row('Location recorder', yes(dv.watcherRunning, 'running', 'not running'))
+          + row('Recorder type', dv.recorder === 'native' ? '<span class="pill ok">phone service</span> <span class="tiny">keeps recording without the app screen</span>' : dv.recorder ? '<span class="pill warn">app page</span> <span class="tiny">older app — stops if Android closes the screen; install the new APK</span>' : '<span class="pill idle">not reported</span>')
           + row('Last fix on the phone', esc(ageTxt(dv.lastFixAt)) + (dv.lastFixAccuracyM != null ? ' · ±' + Math.round(dv.lastFixAccuracyM) + ' m' : ''))
           + row('Waiting to upload', dv.queuedPoints == null ? '—' : String(dv.queuedPoints) + (dv.oldestQueuedAt ? ' · oldest ' + esc(secs(dv.oldestQueuedAt)) : ''))
           + row('Last successful upload', esc(ageTxt(dv.lastUploadOkAt)))
