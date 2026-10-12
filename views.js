@@ -784,13 +784,15 @@ window.DRIVERS_VIEWS = (function () {
         + (list.length === 0
           ? '<p class="muted" style="margin-top:14px"><b>Nobody has registered yet.</b> Install the app on a driver\'s phone, let them enter their name and number, and they will appear here.</p>'
           : '<div style="overflow-x:auto;margin-top:14px"><table><thead><tr>'
-            + '<th>Driver ID</th><th>Name</th><th>Mobile</th><th>Vehicle</th><th>Status</th><th>Last seen</th><th></th></tr></thead><tbody>'
+            + '<th>Driver ID</th><th>Name</th><th>Mobile</th><th>Phone model</th><th>Vehicle</th><th>Status</th><th>Last seen</th><th></th></tr></thead><tbody>'
             + list.map(function (d) {
               return '<tr>'
                 + '<td><b>' + esc(d.driverCode) + '</b></td>'
                 + '<td>' + esc(d.name)
                 + (d.selfReportedName ? '<br><span class="tiny">typed "' + esc(d.selfReportedName) + '" in the app</span>' : '') + '</td>'
                 + '<td>' + esc(d.phone || '—') + '</td>'
+                // Reported by the app (2.5+) on its first ride.
+                + '<td>' + (d.phoneModel ? esc(d.phoneModel) + '<br><span class="tiny">Android ' + esc(d.androidVersion || '?') + ' · app ' + esc(d.appVersion || '?') + '</span>' : '<span class="tiny">not reported yet</span>') + '</td>'
                 + '<td>' + esc(d.vehicleId || '—') + '</td>'
                 + '<td><span class="pill ' + (d.status === 'active' ? 'active' : 'idle') + '">' + esc(d.status) + '</span></td>'
                 + '<td class="tiny">' + (d.lastSeenAt ? dateTime(d.lastSeenAt) : 'never') + '</td>'
@@ -3300,6 +3302,8 @@ window.DRIVERS_VIEWS = (function () {
           + row('Internet (phone says)', yes(dv.online, 'online', 'offline'))
           + row('Battery optimisation', dv.batteryOptimised == null ? '<span class="pill idle">not reported</span>' : dv.batteryOptimised ? '<span class="pill warn">restricted — may stop in background</span>' : '<span class="pill ok">exempt</span>')
           + row('Battery', dv.batteryPct == null ? '—' : dv.batteryPct + '%')
+          + row('Phone', esc(dv.phone || 'not reported') + (dv.android ? ' · Android ' + esc(dv.android) : ''))
+          + row('GPS rate', dv.gpsMode === 'parked' ? 'parked — every 20 s to save battery' : dv.gpsMode === 'moving' ? 'moving — every 2 s' : '—')
           + row('App version', esc(dv.appVersion || '—'))
           + '</table>'
           : '<p class="muted">The phone has never reported its state (an older app version, or it has not been able to reach the server).</p>')
